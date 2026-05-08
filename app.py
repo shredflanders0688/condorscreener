@@ -1,3 +1,19 @@
+
+
+Skip to content
+Using Gmail with screen readers
+
+1 of 18,965
+(no subject)
+Inbox
+
+Robb Dreblow <rtdreblow@gmail.com>
+Attachments
+4:51 PM (0 minutes ago)
+to me
+
+ One attachment
+  •  Scanned by Gmail
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -270,74 +286,120 @@ def score_regime(r):
 # ─── Earnings Calendar ────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def fetch_earnings_calendar(days_ahead):
-    """Fetch upcoming earnings from multiple free sources"""
-    tickers_with_dates = {}
-
-    # Primary: use a curated list of liquid tickers and check their earnings dates via yfinance
-    liquid_universe = [
-        'AAPL','MSFT','GOOGL','AMZN','META','NVDA','TSLA','AMD','NFLX','CRM',
-        'ORCL','ADBE','INTC','QCOM','TXN','AVGO','MU','AMAT','LRCX','KLAC',
-        'JPM','GS','MS','BAC','C','WFC','V','MA','PYPL','AXP',
-        'JNJ','PFE','MRK','ABBV','LLY','BMY','AMGN','GILD','MRNA',
-        'XOM','CVX','COP','SLB','HAL','MPC','VLO',
-        'WMT','TGT','COST','HD','LOW','NKE','SBUX','MCD','DIS','CMCSA',
-        'T','VZ','TMUS','UBER','ABNB','BKNG','SNAP',
-        'BA','CAT','DE','MMM','GE','HON','RTX','LMT',
-        'SHOP','MELI','COIN','HOOD','RBLX','PLTR','SNOW','DDOG','CRWD'
-    ]
+    """Fetch upcoming earnings from Nasdaq earnings calendar API (free, no key)"""
 
     today = datetime.now().date()
     end_date = today + timedelta(days=days_ahead)
-
-    progress = st.progress(0, text="Scanning earnings calendar...")
     found = {}
 
-    for i, ticker in enumerate(liquid_universe):
-        progress.progress((i + 1) / len(liquid_universe),
-                         text=f"Checking {ticker} ({i+1}/{len(liquid_universe)})")
-        try:
-            t = yf.Ticker(ticker)
-            cal = t.calendar
+    # ── Source 1: Nasdaq earnings calendar ───────────────────────────────────
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json, text/plain, */*',
+    }
 
-            if cal is not None and not cal.empty:
-                # yfinance calendar returns earnings date info
-                if 'Earnings Date' in cal.index:
-                    earn_date = cal.loc['Earnings Date'].iloc[0]
-                    if hasattr(earn_date, 'date'):
-                        earn_date = earn_date.date()
-                    if today <= earn_date <= end_date:
-                        found[ticker] = {
-                            'date': earn_date,
-                            'timing': 'AMC'  # yfinance doesn't reliably give BMO/AMC
-                        }
-            time.sleep(0.1)  # Be polite to Yahoo
-        except:
-            pass
+    date_cursor = today
+    while date_cursor <= end_date:
+        # Skip weekends
+        if date_cursor.weekday() < 5:
+            try:
+                url = f"https://api.nasdaq.com/api/calendar/earnings?date={date_cursor.strftime('%Y-%m-%d')}"
+                resp = requests.get(url, headers=headers, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    rows = data.get('data', {}).get('rows', [])
+                    if rows:
+                        for row in rows:
+                            ticker = row.get('symbol', '').strip().upper()
+                            # Filter: no slashes (preferred shares), no dots (foreign), reasonable length
+                            if not ticker or '/' in ticker or '.' in ticker or len(ticker) > 5:
+                                continue
+                            time_str = row.get('time', '').lower()
+                            timing = 'BMO' if 'before' in time_str else 'AMC'
+                            found[ticker] = {
+                                'date': date_cursor,
+                                'timing': timing,
+                                'market_cap': row.get('marketCap', ''),
+                                'eps_est': row.get('epsForecast', '')
+                            }
+            except Exception as e:
+                pass
+        date_cursor += timedelta(days=1)
+        time.sleep(0.2)
 
-    progress.empty()
+    # ── Source 2: Fallback to yfinance earnings_dates if Nasdaq returned nothing ─
+    if len(found) < 3:
+        st.warning("Nasdaq calendar unavailable — falling back to yfinance earnings_dates scan.")
+        found = yfinance_calendar_fallback(today, end_date)
 
-    # If yfinance calendar lookup found few results, supplement with known upcoming reporters
-    # by checking if their next earnings is within our window
-    if len(found) < 5:
-        st.info("Calendar lookup returned few results — using estimated upcoming reporters based on typical quarterly schedule.")
-        found = generate_estimated_calendar(liquid_universe[:25], today, end_date)
+    # ── Filter to optionable liquid tickers only ──────────────────────────────
+    # Remove obvious non-optionable names (very small caps, foreign ordinaries)
+    liquid_universe = set([
+        'AAPL','MSFT','GOOGL','GOOG','AMZN','META','NVDA','TSLA','AMD','NFLX','CRM',
+        'ORCL','ADBE','INTC','QCOM','TXN','AVGO','MU','AMAT','LRCX','KLAC','MRVL',
+        'JPM','GS','MS','BAC','C','WFC','V','MA','PYPL','AXP','BLK','SCHW',
+        'JNJ','PFE','MRK','ABBV','LLY','BMY','AMGN','GILD','MRNA','BIIB','REGN',
+        'XOM','CVX','COP','SLB','HAL','MPC','VLO','PSX','OXY',
+        'WMT','TGT','COST','HD','LOW','NKE','SBUX','MCD','DIS','CMCSA','CHTR',
+        'T','VZ','TMUS','UBER','LYFT','ABNB','BKNG','DASH','SNAP','PINS','RDDT',
+        'BA','CAT','DE','MMM','GE','HON','RTX','LMT','NOC','GD',
+        'SHOP','MELI','COIN','HOOD','RBLX','PLTR','SNOW','DDOG','CRWD','ZS','NET',
+        'SPOT','ROKU','TTD','MTCH','IAC','YELP','TRIP',
+        'F','GM','STLA','RIVN','LCID',
+        'WBA','CVS','MCK','CI','UNH','HUM','CNC',
+        'AMT','PLD','EQIX','CCI','SBAC',
+        'PYPL','SQ','AFRM','SOFI','NU',
+        'SMCI','HPQ','HPE','DELL','STX','WDC',
+        'UAL','DAL','AAL','LUV','JBLU',
+        'MGM','WYNN','LVS','PENN','DKNG',
+        'Z','OPEN','RDFN',
+        'TWLO','OKTA','HUBS','VEEV','NOW','WDAY','TEAM','ZM','DOCU'
+    ])
+
+    # If Nasdaq returned results, filter to known optionable names OR large caps
+    # (Nasdaq API includes everything — we want liquid options candidates)
+    if len(found) > 20:
+        filtered = {}
+        for ticker, info in found.items():
+            # Keep if in our known liquid universe
+            if ticker in liquid_universe:
+                filtered[ticker] = info
+            # Or keep if market cap string suggests large/mid cap
+            elif info.get('market_cap') and info['market_cap'] not in ('', 'N/A', '--'):
+                try:
+                    mc_str = info['market_cap'].replace('$','').replace(',','').strip()
+                    if mc_str.endswith('B'):
+                        mc = float(mc_str[:-1])
+                        if mc >= 2.0:  # $2B+ market cap
+                            filtered[ticker] = info
+                    elif mc_str.endswith('T'):
+                        filtered[ticker] = info  # Always include trillion-cap
+                except:
+                    pass
+        found = filtered if len(filtered) >= 3 else found
 
     return found
 
-def generate_estimated_calendar(tickers, today, end_date):
-    """Estimate upcoming earnings based on last reported date + ~91 days"""
+
+def yfinance_calendar_fallback(today, end_date):
+    """Last resort: scan known liquid tickers via yfinance earnings_dates"""
+    liquid_universe = [
+        'AAPL','MSFT','GOOGL','AMZN','META','NVDA','TSLA','AMD','NFLX',
+        'JPM','GS','BAC','V','MA','WMT','HD','DIS','UBER','COIN',
+        'PLTR','SNOW','DDOG','CRWD','NET','SHOP','MELI','RIVN','SOFI'
+    ]
     found = {}
-    for ticker in tickers:
+    for ticker in liquid_universe:
         try:
             t = yf.Ticker(ticker)
-            # Get last earnings date from earnings history
-            earnings = t.earnings_dates
-            if earnings is not None and not earnings.empty:
-                last_date = earnings.index[0].date() if hasattr(earnings.index[0], 'date') else earnings.index[0]
-                next_est = last_date + timedelta(days=91)
-                if today <= next_est <= end_date:
-                    found[ticker] = {'date': next_est, 'timing': 'AMC'}
-            time.sleep(0.05)
+            ed = t.earnings_dates
+            if ed is not None and not ed.empty:
+                for idx in ed.index:
+                    d = idx.date() if hasattr(idx, 'date') else idx
+                    if today <= d <= end_date:
+                        found[ticker] = {'date': d, 'timing': 'AMC'}
+                        break
+            time.sleep(0.1)
         except:
             pass
     return found
@@ -910,3 +972,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+app.py
+Displaying app.py.
