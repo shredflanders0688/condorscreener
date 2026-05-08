@@ -1,0 +1,912 @@
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import requests
+import json
+import time
+import math
+
+# ─── Page Config ─────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Condor Screener",
+    page_icon="◈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ─── CSS ─────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap');
+
+  html, body, [class*="css"] { font-family: 'Syne', sans-serif; }
+
+  .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
+
+  .metric-card {
+    background: #111318;
+    border: 1px solid #1e2430;
+    border-radius: 10px;
+    padding: 14px 16px;
+    position: relative;
+    overflow: hidden;
+  }
+  .metric-card-top {
+    height: 3px;
+    border-radius: 2px 2px 0 0;
+    position: absolute;
+    top: 0; left: 0; right: 0;
+  }
+  .metric-label {
+    font-family: 'Space Mono', monospace;
+    font-size: 9px;
+    color: #5a6070;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .metric-value {
+    font-family: 'Space Mono', monospace;
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .metric-signal {
+    font-family: 'Space Mono', monospace;
+    font-size: 9px;
+    margin-bottom: 6px;
+  }
+  .metric-desc {
+    font-family: 'Space Mono', monospace;
+    font-size: 9px;
+    color: #5a6070;
+    line-height: 1.5;
+  }
+  .regime-pill {
+    display: inline-block;
+    padding: 6px 18px;
+    border-radius: 20px;
+    font-family: 'Space Mono', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1px;
+  }
+  .pill-favorable { background: rgba(0,230,118,0.15); color: #00e676; border: 1px solid rgba(0,230,118,0.3); }
+  .pill-caution   { background: rgba(255,215,64,0.12); color: #ffd740; border: 1px solid rgba(255,215,64,0.3); }
+  .pill-hostile   { background: rgba(255,77,106,0.12); color: #ff4d6a; border: 1px solid rgba(255,77,106,0.3); }
+  .pill-mixed     { background: rgba(255,145,0,0.12);  color: #ff9100; border: 1px solid rgba(255,145,0,0.3); }
+
+  .score-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    font-family: 'Space Mono', monospace;
+    font-weight: 700;
+    font-size: 13px;
+    border: 2px solid;
+  }
+  .score-a { border-color: #00e676; color: #00e676; }
+  .score-b { border-color: #00e5ff; color: #00e5ff; }
+  .score-c { border-color: #ffd740; color: #ffd740; }
+  .score-d { border-color: #ff9100; color: #ff9100; }
+  .score-f { border-color: #ff4d6a; color: #ff4d6a; }
+
+  .rating-strong   { background: rgba(0,230,118,0.15);  color: #00e676; padding: 3px 10px; border-radius: 20px; font-family: 'Space Mono', monospace; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+  .rating-good     { background: rgba(0,229,255,0.10);  color: #00e5ff; padding: 3px 10px; border-radius: 20px; font-family: 'Space Mono', monospace; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+  .rating-marginal { background: rgba(255,215,64,0.10); color: #ffd740; padding: 3px 10px; border-radius: 20px; font-family: 'Space Mono', monospace; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+  .rating-avoid    { background: rgba(255,77,106,0.10); color: #ff4d6a; padding: 3px 10px; border-radius: 20px; font-family: 'Space Mono', monospace; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+
+  .em-green  { color: #00e676; font-weight: 700; }
+  .em-yellow { color: #ffd740; font-weight: 700; }
+  .em-red    { color: #ff4d6a; font-weight: 700; }
+
+  .section-header {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: #5a6070;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    border-bottom: 1px solid #1e2430;
+    padding-bottom: 8px;
+    margin-bottom: 14px;
+  }
+
+  div[data-testid="stExpander"] {
+    border: 1px solid #1e2430 !important;
+    border-radius: 10px !important;
+    background: #111318 !important;
+  }
+
+  .stDataFrame { font-family: 'Space Mono', monospace; font-size: 11px; }
+</style>
+""", unsafe_allow_html=True)
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+def safe_get(val, default=None):
+    if val is None or (isinstance(val, float) and math.isnan(val)):
+        return default
+    return val
+
+def pct(val, decimals=1):
+    return f"{val*100:.{decimals}f}%"
+
+def dollar(val, decimals=2):
+    return f"${val:.{decimals}f}"
+
+# ─── Regime Data ─────────────────────────────────────────────────────────────
+@st.cache_data(ttl=900)  # Cache 15 min
+def fetch_regime_data():
+    regime = {}
+
+    try:
+        # VIX
+        vix = yf.Ticker("^VIX")
+        vix_hist = vix.history(period="5d")
+        regime['vix'] = float(vix_hist['Close'].iloc[-1]) if not vix_hist.empty else 18.0
+
+        # VVIX
+        vvix = yf.Ticker("^VVIX")
+        vvix_hist = vvix.history(period="5d")
+        regime['vvix'] = float(vvix_hist['Close'].iloc[-1]) if not vvix_hist.empty else 95.0
+
+        # SKEW
+        skew = yf.Ticker("^SKEW")
+        skew_hist = skew.history(period="5d")
+        regime['skew'] = float(skew_hist['Close'].iloc[-1]) if not skew_hist.empty else 138.0
+
+        # HYG as credit proxy (price drop = spread widening)
+        hyg = yf.Ticker("HYG")
+        hyg_hist = hyg.history(period="30d")
+        if not hyg_hist.empty:
+            hyg_now  = float(hyg_hist['Close'].iloc[-1])
+            hyg_prev = float(hyg_hist['Close'].iloc[0])
+            # Rough spread proxy: lower HYG = wider spreads
+            # HYG near 80 = ~300bp, near 70 = ~500bp
+            regime['credit_spread'] = max(100, int(800 - hyg_now * 6.5))
+            regime['hyg_price'] = hyg_now
+            regime['hyg_trend'] = 'widening' if hyg_now < hyg_prev else 'tightening'
+        else:
+            regime['credit_spread'] = 320
+            regime['hyg_price'] = 77.0
+            regime['hyg_trend'] = 'unknown'
+
+        # Sector dispersion: std dev of recent returns across sector ETFs
+        sectors = ['XLK','XLF','XLE','XLV','XLC','XLI','XLY','XLP','XLU','XLRE','XLB']
+        returns = []
+        for s in sectors:
+            try:
+                hist = yf.Ticker(s).history(period="5d")
+                if len(hist) >= 2:
+                    ret = (hist['Close'].iloc[-1] / hist['Close'].iloc[-2] - 1) * 100
+                    returns.append(ret)
+            except:
+                pass
+        regime['dispersion'] = float(np.std(returns)) if len(returns) > 3 else 1.2
+
+        # Gap frequency — estimate from recent earnings reactions
+        # Use a sample of names that recently reported
+        recent_reporters = ['META','MSFT','GOOGL','AMZN','AAPL','NVDA','AMD','NFLX']
+        gap_count = 0
+        total_checked = 0
+        for ticker in recent_reporters:
+            try:
+                t = yf.Ticker(ticker)
+                cal = t.calendar
+                hist = t.history(period="30d")
+                if len(hist) >= 5:
+                    # Look for large overnight gaps as proxy for earnings gaps
+                    for i in range(1, min(5, len(hist))):
+                        gap = abs(hist['Open'].iloc[i] / hist['Close'].iloc[i-1] - 1)
+                        if gap > 0.03:  # >3% overnight gap
+                            gap_count += 1
+                            break
+                    total_checked += 1
+            except:
+                pass
+        regime['gap_frequency'] = int((gap_count / max(total_checked, 1)) * 100)
+
+    except Exception as e:
+        # Safe fallbacks
+        regime.setdefault('vix', 18.0)
+        regime.setdefault('vvix', 95.0)
+        regime.setdefault('skew', 138.0)
+        regime.setdefault('credit_spread', 320)
+        regime.setdefault('hyg_price', 77.0)
+        regime.setdefault('hyg_trend', 'unknown')
+        regime.setdefault('dispersion', 1.2)
+        regime.setdefault('gap_frequency', 30)
+
+    return regime
+
+def score_regime(r):
+    signals = {}
+
+    # VVIX: <85 good, 85-100 warn, >100 bad
+    if r['vvix'] < 85:    signals['vvix'] = ('good', '#00e676', '✓ Calm')
+    elif r['vvix'] < 100: signals['vvix'] = ('warn', '#ffd740', '⚠ Elevated')
+    else:                 signals['vvix'] = ('bad',  '#ff4d6a', '✗ High')
+
+    # VIX: <18 good, 18-25 warn, >25 bad
+    if r['vix'] < 18:    signals['vix'] = ('good', '#00e676', '✓ Favorable (15-22 sweet spot)')
+    elif r['vix'] < 25:  signals['vix'] = ('warn', '#ffd740', '⚠ Moderate')
+    else:                signals['vix'] = ('bad',  '#ff4d6a', '✗ Elevated')
+
+    # SKEW: <130 good, 130-145 warn, >145 bad
+    if r['skew'] < 130:   signals['skew'] = ('good', '#00e676', '✓ Normal tail risk')
+    elif r['skew'] < 145: signals['skew'] = ('warn', '#ffd740', '⚠ Elevated hedging')
+    else:                 signals['skew'] = ('bad',  '#ff4d6a', '✗ Heavy tail hedging')
+
+    # Credit: <300 good, 300-450 warn, >450 bad
+    if r['credit_spread'] < 300:   signals['credit'] = ('good', '#00e676', '✓ Tight spreads')
+    elif r['credit_spread'] < 450: signals['credit'] = ('warn', '#ffd740', f"⚠ Widening ({r['hyg_trend']})")
+    else:                          signals['credit'] = ('bad',  '#ff4d6a', '✗ Wide — stress signal')
+
+    # Dispersion: <1.0 good, 1.0-2.0 warn, >2.0 bad
+    if r['dispersion'] < 1.0:   signals['dispersion'] = ('good', '#00e676', '✓ Low sector divergence')
+    elif r['dispersion'] < 2.0: signals['dispersion'] = ('warn', '#ffd740', '⚠ Moderate dispersion')
+    else:                       signals['dispersion'] = ('bad',  '#ff4d6a', '✗ High — macro bleed risk')
+
+    # Gap freq: <30 good, 30-45 warn, >45 bad
+    if r['gap_frequency'] < 30:   signals['gap_freq'] = ('good', '#00e676', '✓ EM mostly respected')
+    elif r['gap_frequency'] < 45: signals['gap_freq'] = ('warn', '#ffd740', '⚠ Elevated gap risk')
+    else:                         signals['gap_freq'] = ('bad',  '#ff4d6a', '✗ EM frequently blown out')
+
+    bad_count  = sum(1 for s in signals.values() if s[0] == 'bad')
+    good_count = sum(1 for s in signals.values() if s[0] == 'good')
+
+    if bad_count >= 3:       verdict = ('HOSTILE — SIT OUT',    'pill-hostile')
+    elif bad_count >= 2:     verdict = ('CAUTION — SIZE DOWN',  'pill-caution')
+    elif good_count >= 4:    verdict = ('FAVORABLE — TRADE',    'pill-favorable')
+    else:                    verdict = ('MIXED — BE SELECTIVE', 'pill-mixed')
+
+    return signals, verdict
+
+# ─── Earnings Calendar ────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def fetch_earnings_calendar(days_ahead):
+    """Fetch upcoming earnings from multiple free sources"""
+    tickers_with_dates = {}
+
+    # Primary: use a curated list of liquid tickers and check their earnings dates via yfinance
+    liquid_universe = [
+        'AAPL','MSFT','GOOGL','AMZN','META','NVDA','TSLA','AMD','NFLX','CRM',
+        'ORCL','ADBE','INTC','QCOM','TXN','AVGO','MU','AMAT','LRCX','KLAC',
+        'JPM','GS','MS','BAC','C','WFC','V','MA','PYPL','AXP',
+        'JNJ','PFE','MRK','ABBV','LLY','BMY','AMGN','GILD','MRNA',
+        'XOM','CVX','COP','SLB','HAL','MPC','VLO',
+        'WMT','TGT','COST','HD','LOW','NKE','SBUX','MCD','DIS','CMCSA',
+        'T','VZ','TMUS','UBER','ABNB','BKNG','SNAP',
+        'BA','CAT','DE','MMM','GE','HON','RTX','LMT',
+        'SHOP','MELI','COIN','HOOD','RBLX','PLTR','SNOW','DDOG','CRWD'
+    ]
+
+    today = datetime.now().date()
+    end_date = today + timedelta(days=days_ahead)
+
+    progress = st.progress(0, text="Scanning earnings calendar...")
+    found = {}
+
+    for i, ticker in enumerate(liquid_universe):
+        progress.progress((i + 1) / len(liquid_universe),
+                         text=f"Checking {ticker} ({i+1}/{len(liquid_universe)})")
+        try:
+            t = yf.Ticker(ticker)
+            cal = t.calendar
+
+            if cal is not None and not cal.empty:
+                # yfinance calendar returns earnings date info
+                if 'Earnings Date' in cal.index:
+                    earn_date = cal.loc['Earnings Date'].iloc[0]
+                    if hasattr(earn_date, 'date'):
+                        earn_date = earn_date.date()
+                    if today <= earn_date <= end_date:
+                        found[ticker] = {
+                            'date': earn_date,
+                            'timing': 'AMC'  # yfinance doesn't reliably give BMO/AMC
+                        }
+            time.sleep(0.1)  # Be polite to Yahoo
+        except:
+            pass
+
+    progress.empty()
+
+    # If yfinance calendar lookup found few results, supplement with known upcoming reporters
+    # by checking if their next earnings is within our window
+    if len(found) < 5:
+        st.info("Calendar lookup returned few results — using estimated upcoming reporters based on typical quarterly schedule.")
+        found = generate_estimated_calendar(liquid_universe[:25], today, end_date)
+
+    return found
+
+def generate_estimated_calendar(tickers, today, end_date):
+    """Estimate upcoming earnings based on last reported date + ~91 days"""
+    found = {}
+    for ticker in tickers:
+        try:
+            t = yf.Ticker(ticker)
+            # Get last earnings date from earnings history
+            earnings = t.earnings_dates
+            if earnings is not None and not earnings.empty:
+                last_date = earnings.index[0].date() if hasattr(earnings.index[0], 'date') else earnings.index[0]
+                next_est = last_date + timedelta(days=91)
+                if today <= next_est <= end_date:
+                    found[ticker] = {'date': next_est, 'timing': 'AMC'}
+            time.sleep(0.05)
+        except:
+            pass
+    return found
+
+# ─── Options Data ─────────────────────────────────────────────────────────────
+@st.cache_data(ttl=600)
+def fetch_options_data(ticker, em_min, em_max, min_oi):
+    """Fetch live options chain and calculate all metrics"""
+    result = {
+        'ticker': ticker,
+        'price': None,
+        'front_iv': None,
+        'back_iv': None,
+        'slope': None,
+        'slope_pct': None,
+        'delta': None,
+        'gamma': None,
+        'theta': None,
+        'vega': None,
+        'em': None,
+        'em_flag': 'unknown',
+        'open_interest': None,
+        'liquidity_ok': False,
+        'error': None
+    }
+
+    try:
+        t = yf.Ticker(ticker)
+
+        # Current price
+        hist = t.history(period="2d")
+        if hist.empty:
+            result['error'] = 'No price data'
+            return result
+        price = float(hist['Close'].iloc[-1])
+        result['price'] = price
+
+        # Get options expiries
+        expiries = t.options
+        if not expiries or len(expiries) < 2:
+            result['error'] = 'Insufficient expiries'
+            return result
+
+        today = datetime.now().date()
+
+        # Find front month (nearest expiry, ideally 0-14 DTE)
+        front_expiry = None
+        back_expiry = None
+
+        for exp in expiries:
+            exp_date = datetime.strptime(exp, '%Y-%m-%d').date()
+            dte = (exp_date - today).days
+            if front_expiry is None and dte >= 0:
+                front_expiry = exp
+                front_dte = dte
+            elif back_expiry is None and dte >= 20:
+                back_expiry = exp
+                back_dte = dte
+            if front_expiry and back_expiry:
+                break
+
+        if not front_expiry or not back_expiry:
+            result['error'] = 'Could not find suitable expiries'
+            return result
+
+        # Fetch option chains
+        front_chain = t.option_chain(front_expiry)
+        back_chain  = t.option_chain(back_expiry)
+
+        # ATM strike = nearest to current price
+        front_calls = front_chain.calls
+        if front_calls.empty:
+            result['error'] = 'No front month calls'
+            return result
+
+        # Find ATM strike
+        atm_idx = (front_calls['strike'] - price).abs().idxmin()
+        atm_strike = front_calls.loc[atm_idx, 'strike']
+
+        # Front month ATM call
+        atm_call = front_calls.loc[atm_idx]
+        front_iv = safe_get(atm_call.get('impliedVolatility'), 0)
+        result['front_iv'] = float(front_iv)
+        result['open_interest'] = int(safe_get(atm_call.get('openInterest'), 0))
+        result['liquidity_ok'] = result['open_interest'] >= min_oi
+
+        # Greeks from front month ATM call
+        result['delta'] = safe_get(atm_call.get('delta'), 0.50)
+        result['gamma'] = safe_get(atm_call.get('gamma'), 0.02)
+        result['theta'] = safe_get(atm_call.get('theta'), -0.10)
+        result['vega']  = safe_get(atm_call.get('vega'),  0.20)
+
+        # If Greeks not in chain (yfinance doesn't always provide them), estimate from BSM
+        if result['delta'] == 0.50 and result['gamma'] == 0.02:
+            result['delta'], result['gamma'], result['theta'], result['vega'] = \
+                estimate_greeks(price, atm_strike, front_dte / 365, front_iv)
+
+        # Expected move = front month ATM straddle price / stock price
+        front_puts = front_chain.puts
+        atm_put_rows = front_puts[front_puts['strike'] == atm_strike]
+        if not atm_put_rows.empty:
+            call_mid = (atm_call['bid'] + atm_call['ask']) / 2
+            put_mid  = (atm_put_rows.iloc[0]['bid'] + atm_put_rows.iloc[0]['ask']) / 2
+            em = (call_mid + put_mid) / price
+        else:
+            # Fallback: estimate EM from IV
+            em = front_iv * math.sqrt(front_dte / 365) * 0.8
+        result['em'] = float(em)
+
+        # Back month IV
+        back_calls = back_chain.calls
+        if not back_calls.empty:
+            back_atm_idx = (back_calls['strike'] - price).abs().idxmin()
+            back_iv = safe_get(back_calls.loc[back_atm_idx, 'impliedVolatility'], 0)
+            result['back_iv'] = float(back_iv)
+        else:
+            result['back_iv'] = float(front_iv * 0.65)
+
+        # Term structure slope
+        result['slope'] = result['front_iv'] - result['back_iv']
+        result['slope_pct'] = (result['slope'] / max(result['back_iv'], 0.01)) * 100
+
+        # EM flag
+        if em_min <= result['em'] <= em_max:
+            result['em_flag'] = 'green'
+        elif result['em'] < em_min * 0.7 or result['em'] > em_max * 1.4:
+            result['em_flag'] = 'red'
+        else:
+            result['em_flag'] = 'yellow'
+
+    except Exception as e:
+        result['error'] = str(e)[:60]
+
+    return result
+
+def estimate_greeks(S, K, T, sigma, r=0.05):
+    """Black-Scholes Greeks approximation"""
+    try:
+        if T <= 0 or sigma <= 0:
+            return 0.5, 0.02, -0.10, 0.20
+        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+        from scipy.stats import norm
+        delta = norm.cdf(d1)
+        gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
+        theta = (-(S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365
+        vega  = S * norm.pdf(d1) * math.sqrt(T) / 100
+        return round(delta, 4), round(gamma, 4), round(theta, 4), round(vega, 4)
+    except:
+        return 0.50, 0.02, -0.10, 0.20
+
+# ─── Condor Strikes ───────────────────────────────────────────────────────────
+def recommend_condor(price, em, iv, breach_count, breach_quarters, breach_avg_mag, slope_threshold):
+    """Recommend iron condor strikes balancing breach probability and credit"""
+
+    # Adjust buffer for breach history
+    buffer = 1.05  # Default: place strikes just beyond EM
+    breach_rate = 0.0
+
+    if breach_count is not None and breach_quarters > 0:
+        breach_rate = breach_count / breach_quarters
+        if breach_rate > 0.5:   buffer = 1.35
+        elif breach_rate > 0.25: buffer = 1.15
+        else:                    buffer = 1.0
+        if breach_avg_mag:
+            buffer += breach_avg_mag * 0.4
+
+    move_amount = price * em * buffer
+
+    # Wing width: ~2.5-5% of stock price, rounded to nearest $0.50
+    wing_width = max(2.5, round(price * 0.03 / 0.5) * 0.5)
+
+    short_call = round((price + move_amount) / 0.5) * 0.5
+    long_call  = short_call + wing_width
+    short_put  = round((price - move_amount) / 0.5) * 0.5
+    long_put   = short_put  - wing_width
+
+    # Credit estimate: function of IV and wing width
+    # Higher IV = more credit; typical range 12-22% of wing width
+    credit_pct = max(0.10, min(0.25, 0.10 + (iv - 0.25) * 0.3))
+    credit     = round(wing_width * credit_pct * 2, 2)  # Both sides
+    max_loss   = round(wing_width - (credit / 2), 2)    # Per side
+
+    # Prob profit estimate
+    prob_profit = max(40, min(90, int((1 - breach_rate) * 100 - 5)))
+
+    # Expected value per contract
+    ev = (credit * 100 * prob_profit/100) - (max_loss * 100 * (1 - prob_profit/100))
+
+    return {
+        'short_call': short_call,
+        'long_call':  long_call,
+        'short_put':  short_put,
+        'long_put':   long_put,
+        'wing_width': wing_width,
+        'credit':     credit,
+        'max_loss':   max_loss,
+        'prob_profit': prob_profit,
+        'ev':         round(ev, 2),
+        'breach_rate': breach_rate,
+        'buffer_used': buffer
+    }
+
+# ─── Scoring ──────────────────────────────────────────────────────────────────
+def calculate_score(em, em_min, em_max, slope, slope_threshold,
+                    breach_count, breach_quarters, liquidity_ok, front_iv):
+    score = 0
+
+    # EM in sweet spot (30 pts)
+    if em_min <= em <= em_max:                        score += 30
+    elif em_min * 0.8 <= em <= em_max * 1.2:          score += 15
+
+    # Term structure slope (25 pts)
+    slope_ratio = slope / max(slope_threshold, 0.001)
+    score += min(25, int(slope_ratio * 25))
+
+    # Breach history (25 pts)
+    if breach_count is not None and breach_quarters > 0:
+        rate = breach_count / breach_quarters
+        if rate == 0:        score += 25
+        elif rate <= 0.25:   score += 20
+        elif rate <= 0.375:  score += 12
+        elif rate <= 0.5:    score += 5
+    else:
+        score += 12  # Unknown = neutral
+
+    # Liquidity (10 pts)
+    score += 10 if liquidity_ok else 3
+
+    # IV level (10 pts)
+    if 0.30 <= front_iv <= 0.80:   score += 10
+    elif 0.20 <= front_iv <= 1.0:  score += 5
+
+    return min(100, score)
+
+def get_rating(score):
+    if score >= 75:   return 'strong'
+    elif score >= 55: return 'good'
+    elif score >= 35: return 'marginal'
+    return 'avoid'
+
+# ─── Breach Data Persistence ───────────────────────────────────────────────────
+def load_breach_data():
+    if 'breach_data' not in st.session_state:
+        st.session_state.breach_data = {}
+    return st.session_state.breach_data
+
+def save_breach_entry(ticker, count, avg_mag, quarters):
+    if 'breach_data' not in st.session_state:
+        st.session_state.breach_data = {}
+    st.session_state.breach_data[ticker] = {
+        'count': count,
+        'avg_mag': avg_mag / 100 if avg_mag else None,
+        'quarters': quarters
+    }
+
+# ─── Main App ─────────────────────────────────────────────────────────────────
+def main():
+    # Header
+    st.markdown("""
+    <div style='margin-bottom:8px'>
+      <div style='font-family:"Space Mono",monospace;font-size:10px;color:#00e5ff;letter-spacing:3px;text-transform:uppercase;margin-bottom:4px'>
+        // Earnings Vol Intelligence
+      </div>
+      <div style='font-family:"Syne",sans-serif;font-size:32px;font-weight:800;letter-spacing:-1px;line-height:1'>
+        Condor <span style='color:#00e5ff'>Screener</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.caption(f"Free data via yfinance · {datetime.now().strftime('%A, %B %d %Y')}")
+
+    # ── Sidebar Controls ──────────────────────────────────────────────────────
+    with st.sidebar:
+        st.markdown("### ⚙️ Screener Settings")
+
+        days_ahead = st.selectbox(
+            "Earnings Window",
+            [3, 7, 14, 30],
+            index=1,
+            format_func=lambda x: f"Next {x} days"
+        )
+
+        slope_threshold = st.slider(
+            "Term Structure Threshold (%)",
+            min_value=1.0, max_value=20.0, value=5.0, step=0.5,
+            help="Minimum IV differential between front and 30DTE to pass the slope filter"
+        ) / 100
+
+        em_min = st.slider(
+            "EM Sweet Spot — Min (%)",
+            min_value=2.0, max_value=8.0, value=5.0, step=0.5
+        ) / 100
+
+        em_max = st.slider(
+            "EM Sweet Spot — Max (%)",
+            min_value=8.0, max_value=20.0, value=10.0, step=0.5
+        ) / 100
+
+        min_oi = st.selectbox(
+            "Min Open Interest",
+            [100, 500, 1000, 5000],
+            index=1,
+            format_func=lambda x: f"{x:,}+"
+        )
+
+        st.markdown("---")
+        st.markdown("### 📋 Filter Results")
+        rating_filter = st.multiselect(
+            "Show ratings",
+            ['strong', 'good', 'marginal', 'avoid'],
+            default=['strong', 'good', 'marginal']
+        )
+
+        st.markdown("---")
+        run_screener = st.button("▶ Run Screener", type="primary", use_container_width=True)
+        if st.button("↻ Refresh Regime Data", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+    # ── Regime Dashboard ──────────────────────────────────────────────────────
+    st.markdown('<div class="section-header">// MACRO REGIME DASHBOARD</div>', unsafe_allow_html=True)
+
+    with st.spinner("Loading regime indicators..."):
+        regime = fetch_regime_data()
+    signals, verdict = score_regime(regime)
+
+    verdict_text, verdict_class = verdict
+    st.markdown(
+        f'<div style="margin-bottom:16px">Trade Regime: '
+        f'<span class="regime-pill {verdict_class}">{verdict_text}</span></div>',
+        unsafe_allow_html=True
+    )
+
+    # Six metric cards
+    metric_defs = [
+        ('vvix',       'VVICKS',            f"{regime['vvix']:.1f}",
+         'Vol of vol — uncertainty about future vol. Under 85 = calm.'),
+        ('vix',        'VICKS',             f"{regime['vix']:.1f}",
+         'S&P 30-day implied vol. Strategy sweet spot: 15–22.'),
+        ('skew',       'SKEW INDEX',        f"{regime['skew']:.1f}",
+         'Tail risk demand. Elevated = institutions buying downside protection.'),
+        ('credit',     'CREDIT SPREADS',    f"{regime['credit_spread']}bp",
+         f"HY proxy via HYG (${regime['hyg_price']:.2f}, {regime['hyg_trend']}). Widening = stress signal."),
+        ('dispersion', 'SECTOR DISPERSION', f"{regime['dispersion']:.2f}σ",
+         'Cross-sector return std dev. High = macro bleed amplifying gaps.'),
+        ('gap_freq',   'RECENT GAP FREQ',   f"{regime['gap_frequency']}%",
+         '% of recent reporters with >3% overnight gap. Most direct strategy risk.'),
+    ]
+
+    cols = st.columns(6)
+    for i, (key, name, value, desc) in enumerate(metric_defs):
+        sig, color, label = signals[key]
+        top_color = color
+        with cols[i]:
+            st.markdown(f"""
+            <div class="metric-card">
+              <div class="metric-card-top" style="background:{top_color}"></div>
+              <div class="metric-label">{name}</div>
+              <div class="metric-value" style="color:{color}">{value}</div>
+              <div class="metric-signal" style="color:{color}">{label}</div>
+              <div class="metric-desc">{desc}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # Checklist
+    flag_items = []
+    flag_labels = {
+        'vvix': 'VVICKS', 'vix': 'VICKS', 'skew': 'SKEW',
+        'credit': 'CREDIT', 'dispersion': 'DISPERSION', 'gap_freq': 'GAP FREQ'
+    }
+    flag_html = '<div style="margin-top:14px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+    flag_html += '<span style="font-family:\'Space Mono\',monospace;font-size:9px;color:#5a6070;letter-spacing:1px">CHECKLIST:</span>'
+    for key, label in flag_labels.items():
+        sig, color, _ = signals[key]
+        icon = '✓' if sig == 'good' else '⚠' if sig == 'warn' else '✗'
+        bg   = 'rgba(0,230,118,0.12)' if sig == 'good' else 'rgba(255,215,64,0.12)' if sig == 'warn' else 'rgba(255,77,106,0.12)'
+        flag_html += f'<span style="background:{bg};color:{color};padding:2px 8px;border-radius:3px;font-family:\'Space Mono\',monospace;font-size:9px">{label} {icon}</span>'
+    flag_html += '</div>'
+    st.markdown(flag_html, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Screener Results ──────────────────────────────────────────────────────
+    st.markdown('<div class="section-header">// EARNINGS CANDIDATES</div>', unsafe_allow_html=True)
+
+    breach_data = load_breach_data()
+
+    if 'results' not in st.session_state:
+        st.session_state.results = []
+
+    if run_screener:
+        st.session_state.results = []
+
+        with st.spinner("Fetching earnings calendar..."):
+            earnings_map = fetch_earnings_calendar(days_ahead)
+
+        if not earnings_map:
+            st.warning("No upcoming earnings found for this window. Try extending the date range.")
+        else:
+            st.info(f"Found {len(earnings_map)} upcoming earnings reports — fetching options data...")
+            progress = st.progress(0)
+            tickers = list(earnings_map.keys())
+
+            for i, ticker in enumerate(tickers):
+                progress.progress((i + 1) / len(tickers), text=f"Analyzing {ticker}...")
+                opts = fetch_options_data(ticker, em_min, em_max, min_oi)
+
+                if opts['error'] or opts['price'] is None:
+                    continue
+
+                breach = breach_data.get(ticker, {'count': None, 'avg_mag': None, 'quarters': 8})
+                score = calculate_score(
+                    opts['em'], em_min, em_max,
+                    opts['slope'], slope_threshold,
+                    breach['count'], breach.get('quarters', 8),
+                    opts['liquidity_ok'], opts['front_iv']
+                )
+                rating = get_rating(score)
+                condor = recommend_condor(
+                    opts['price'], opts['em'], opts['front_iv'],
+                    breach['count'], breach.get('quarters', 8),
+                    breach.get('avg_mag'), slope_threshold
+                )
+
+                st.session_state.results.append({
+                    **opts,
+                    'earnings_date': earnings_map[ticker]['date'],
+                    'timing': earnings_map[ticker]['timing'],
+                    'breach_count': breach['count'],
+                    'breach_avg_mag': breach.get('avg_mag'),
+                    'breach_quarters': breach.get('quarters', 8),
+                    'condor': condor,
+                    'score': score,
+                    'rating': rating
+                })
+
+            progress.empty()
+            st.success(f"Scan complete — {len(st.session_state.results)} tickers analyzed")
+
+    # ── Display Results ───────────────────────────────────────────────────────
+    results = st.session_state.results
+    if results:
+        # Filter and sort
+        filtered = [r for r in results if r['rating'] in rating_filter]
+        filtered.sort(key=lambda x: x['score'], reverse=True)
+
+        # Summary stats
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Scanned",  len(results))
+        c2.metric("Strong",   sum(1 for r in results if r['rating'] == 'strong'))
+        c3.metric("Good",     sum(1 for r in results if r['rating'] == 'good'))
+        c4.metric("Marginal", sum(1 for r in results if r['rating'] == 'marginal'))
+        c5.metric("Avoid",    sum(1 for r in results if r['rating'] == 'avoid'))
+        c6.metric("Avg Score", f"{sum(r['score'] for r in results) / len(results):.0f}")
+
+        st.markdown(f"Showing **{len(filtered)}** of {len(results)} results")
+
+        for r in filtered:
+            em_color = {'green': '#00e676', 'yellow': '#ffd740', 'red': '#ff4d6a'}.get(r['em_flag'], '#5a6070')
+            slope_ok = r['slope'] >= slope_threshold
+            score_cls = 'score-a' if r['score'] >= 75 else 'score-b' if r['score'] >= 55 else 'score-c' if r['score'] >= 35 else 'score-f'
+            breach_display = f"{r['breach_count']}/{r['breach_quarters']} qtrs" if r['breach_count'] is not None else "No data — click to enter"
+
+            with st.expander(
+                f"{'🟢' if r['rating']=='strong' else '🔵' if r['rating']=='good' else '🟡' if r['rating']=='marginal' else '🔴'}  "
+                f"**{r['ticker']}**  ·  "
+                f"Earnings {r['earnings_date']} {r['timing']}  ·  "
+                f"EM {pct(r['em'])}  ·  "
+                f"Score {r['score']}/100  ·  "
+                f"{'STRONG' if r['rating']=='strong' else 'GOOD' if r['rating']=='good' else 'MARGINAL' if r['rating']=='marginal' else 'AVOID'}"
+            ):
+                tab1, tab2, tab3 = st.tabs(["📊 Greeks & IV", "🦅 Condor Setup", "📝 Breach History"])
+
+                with tab1:
+                    g1, g2, g3, g4 = st.columns(4)
+                    g1.metric("Price",    dollar(r['price']))
+                    g2.metric("Front IV", pct(r['front_iv']))
+                    g3.metric("30D IV",   pct(r['back_iv']))
+                    g4.metric("Slope",    pct(r['slope']), delta="✓ Meets threshold" if slope_ok else "✗ Below threshold")
+
+                    g5, g6, g7, g8 = st.columns(4)
+                    g5.metric("Delta", f"{r['delta']:.3f}")
+                    g6.metric("Gamma", f"{r['gamma']:.4f}")
+                    g7.metric("Theta", f"{r['theta']:.3f}")
+                    g8.metric("Vega",  f"{r['vega']:.3f}")
+
+                    g9, g10, g11, g12 = st.columns(4)
+                    g9.metric("Exp Move", pct(r['em']),
+                              delta="Sweet spot ✓" if r['em_flag'] == 'green' else "Outside range" if r['em_flag'] == 'yellow' else "Extreme ✗")
+                    g10.metric("Open Interest", f"{r['open_interest']:,}" if r['open_interest'] else "—",
+                               delta="✓ Liquid" if r['liquidity_ok'] else "✗ Thin")
+                    g11.metric("Score", f"{r['score']}/100")
+                    g12.metric("Rating", r['rating'].upper())
+
+                with tab2:
+                    c = r['condor']
+                    st.markdown("**Recommended Iron Condor**")
+
+                    sc1, sc2, sc3, sc4 = st.columns(4)
+                    sc1.metric("Long Put",  dollar(c['long_put']),  delta="Buy (protection)")
+                    sc2.metric("Short Put", dollar(c['short_put']), delta="Sell (premium)")
+                    sc3.metric("Short Call",dollar(c['short_call']),delta="Sell (premium)")
+                    sc4.metric("Long Call", dollar(c['long_call']), delta="Buy (protection)")
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Est. Credit",    dollar(c['credit'] * 100, 0) + "/contract")
+                    m2.metric("Max Loss",       dollar(c['max_loss'] * 100, 0) + "/contract")
+                    m3.metric("Est. Prob Profit", f"{c['prob_profit']}%")
+                    m4.metric("Expected Value", dollar(c['ev']) + "/contract")
+
+                    st.info(f"""
+**Pre-commit exit rules (write these down before entering):**
+- **Winner:** Close at 50% of max credit → buy back at ${c['credit']*50:.0f}
+- **Loser:** Close threatened side at 2× total credit → ${c['credit']*200:.0f}
+- **Time:** Close full position at market open morning after earnings — no exceptions
+                    """)
+
+                    if c['breach_rate'] > 0.4:
+                        st.warning(f"⚠️ High historical breach rate ({c['breach_rate']*100:.0f}%) — strikes placed {c['buffer_used']:.2f}× beyond EM. Consider skipping.")
+
+                with tab3:
+                    st.markdown("**Enter thinkBack data to improve score and strike accuracy**")
+                    st.caption("In TOS → Analyze → thinkBack → go to earnings eve → check ATM straddle vs actual move")
+
+                    saved = breach_data.get(r['ticker'], {})
+
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        b_count = st.number_input(
+                            "Breaches (last N quarters)",
+                            min_value=0, max_value=12,
+                            value=int(saved['count']) if saved.get('count') is not None else 0,
+                            key=f"bc_{r['ticker']}"
+                        )
+                    with col_b:
+                        b_mag = st.number_input(
+                            "Avg breach magnitude (%)",
+                            min_value=0.0, max_value=50.0, step=0.1,
+                            value=float(saved['avg_mag'] * 100) if saved.get('avg_mag') else 0.0,
+                            key=f"bm_{r['ticker']}"
+                        )
+                    with col_c:
+                        b_qtrs = st.number_input(
+                            "Quarters checked",
+                            min_value=1, max_value=12, value=int(saved.get('quarters', 8)),
+                            key=f"bq_{r['ticker']}"
+                        )
+
+                    if st.button(f"💾 Save breach data for {r['ticker']}", key=f"save_{r['ticker']}"):
+                        save_breach_entry(r['ticker'], b_count, b_mag if b_mag > 0 else None, b_qtrs)
+                        st.success(f"Saved! Re-run screener to recalculate score and strikes for {r['ticker']}.")
+
+    else:
+        st.markdown("""
+        <div style='text-align:center;padding:60px 20px;color:#5a6070'>
+          <div style='font-size:48px;margin-bottom:16px;opacity:0.3'>◈</div>
+          <div style='font-family:"Syne",sans-serif;font-size:16px;font-weight:700;margin-bottom:8px'>No results yet</div>
+          <div style='font-family:"Space Mono",monospace;font-size:11px;opacity:0.6'>Configure your thresholds in the sidebar and click Run Screener</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Footer
+    st.markdown("---")
+    st.caption(
+        "For informational and educational purposes only. Not financial advice. "
+        "Options data sourced from Yahoo Finance (yfinance). "
+        "Always verify independently in TOS before trading. "
+        "Historical breach data requires manual entry from TOS thinkBack."
+    )
+
+if __name__ == "__main__":
+    main()
