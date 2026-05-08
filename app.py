@@ -539,17 +539,36 @@ def estimate_greeks(S, K, T, sigma, r=0.05):
 def recommend_condor(price, em, iv, breach_count, breach_quarters, breach_avg_mag, slope_threshold):
     """Recommend iron condor strikes balancing breach probability and credit"""
 
+    # Guard against None/NaN inputs
+    try:
+        price = float(price)
+        em    = float(em)
+        iv    = float(iv)
+        if any(math.isnan(v) or math.isinf(v) for v in [price, em, iv]):
+            raise ValueError("NaN or Inf in inputs")
+        if price <= 0 or em <= 0:
+            raise ValueError("Non-positive price or EM")
+    except Exception:
+        return {
+            'short_call': 0, 'long_call': 0, 'short_put': 0, 'long_put': 0,
+            'wing_width': 0, 'credit': 0, 'max_loss': 0,
+            'prob_profit': 0, 'ev': 0, 'breach_rate': 0, 'buffer_used': 1.0
+        }
+
     # Adjust buffer for breach history
     buffer = 1.05  # Default: place strikes just beyond EM
     breach_rate = 0.0
 
-    if breach_count is not None and breach_quarters > 0:
-        breach_rate = breach_count / breach_quarters
-        if breach_rate > 0.5:   buffer = 1.35
-        elif breach_rate > 0.25: buffer = 1.15
-        else:                    buffer = 1.0
-        if breach_avg_mag:
-            buffer += breach_avg_mag * 0.4
+    if breach_count is not None and breach_quarters and breach_quarters > 0:
+        try:
+            breach_rate = int(breach_count) / int(breach_quarters)
+            if breach_rate > 0.5:    buffer = 1.35
+            elif breach_rate > 0.25: buffer = 1.15
+            else:                    buffer = 1.0
+            if breach_avg_mag and not math.isnan(float(breach_avg_mag)):
+                buffer += float(breach_avg_mag) * 0.4
+        except:
+            pass
 
     move_amount = price * em * buffer
 
@@ -791,7 +810,14 @@ def main():
                 progress.progress((i + 1) / len(tickers), text=f"Analyzing {ticker}...")
                 opts = fetch_options_data(ticker, em_min, em_max, min_oi)
 
-                if opts['error'] or opts['price'] is None:
+                if opts['error'] or opts['price'] is None or opts['em'] is None or opts['front_iv'] is None:
+                    continue
+
+                # Skip if any core value is NaN
+                try:
+                    if any(math.isnan(float(opts[k])) for k in ['price', 'em', 'front_iv', 'back_iv'] if opts[k] is not None):
+                        continue
+                except:
                     continue
 
                 breach = breach_data.get(ticker, {'count': None, 'avg_mag': None, 'quarters': 8})
@@ -956,5 +982,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-app.py
-#Displaying app.py
