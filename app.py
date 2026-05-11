@@ -1,3 +1,19 @@
+None selected 
+
+Skip to content
+Using Gmail with screen readers
+
+1 of 18,982
+(no subject)
+Inbox
+
+Robb Dreblow <rtdreblow@gmail.com>
+Attachments
+2:44 PM (11 minutes ago)
+to me
+
+ One attachment
+  •  Scanned by Gmail
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -1162,3 +1178,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+app.py
+#Displaying app.py. 
