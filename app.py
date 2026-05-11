@@ -25,6 +25,33 @@ st.markdown("""
 
   .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
 
+  /* ── Force all Streamlit metric labels and values to white ── */
+  [data-testid="stMetricLabel"] p,
+  [data-testid="stMetricLabel"] label,
+  [data-testid="stMetricLabel"] { color: #ffffff !important; font-weight: 600 !important; }
+
+  [data-testid="stMetricValue"] { color: #ffffff !important; font-weight: 700 !important; }
+
+  [data-testid="stMetricDelta"] { font-size: 11px !important; }
+
+  /* ── Expander headers — ticker results ── */
+  [data-testid="stExpander"] summary p,
+  [data-testid="stExpander"] summary span,
+  [data-testid="stExpander"] summary { color: #ffffff !important; font-weight: 700 !important; font-size: 15px !important; }
+
+  /* ── Tab labels ── */
+  [data-testid="stTabs"] button p,
+  [data-testid="stTabs"] button { color: #ffffff !important; font-weight: 600 !important; }
+
+  /* ── General text inside expanders ── */
+  [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p,
+  [data-testid="stExpander"] label,
+  [data-testid="stExpander"] p { color: #e8eaf0 !important; }
+
+  /* ── Sidebar labels ── */
+  [data-testid="stSidebar"] label,
+  [data-testid="stSidebar"] p { color: #e8eaf0 !important; }
+
   .metric-card {
     background: #111318;
     border: 1px solid #1e2430;
@@ -42,7 +69,7 @@ st.markdown("""
   .metric-label {
     font-family: 'Space Mono', monospace;
     font-size: 9px;
-    color: #5a6070;
+    color: #a0a8b8;
     letter-spacing: 1.5px;
     text-transform: uppercase;
     margin-bottom: 4px;
@@ -53,6 +80,7 @@ st.markdown("""
     font-weight: 700;
     line-height: 1;
     margin-bottom: 4px;
+    color: #ffffff;
   }
   .metric-signal {
     font-family: 'Space Mono', monospace;
@@ -62,7 +90,7 @@ st.markdown("""
   .metric-desc {
     font-family: 'Space Mono', monospace;
     font-size: 9px;
-    color: #5a6070;
+    color: #8090a8;
     line-height: 1.5;
   }
   .regime-pill {
@@ -109,7 +137,7 @@ st.markdown("""
   .section-header {
     font-family: 'Space Mono', monospace;
     font-size: 10px;
-    color: #5a6070;
+    color: #a0a8b8;
     letter-spacing: 2px;
     text-transform: uppercase;
     border-bottom: 1px solid #1e2430;
@@ -124,6 +152,9 @@ st.markdown("""
   }
 
   .stDataFrame { font-family: 'Space Mono', monospace; font-size: 11px; }
+
+  /* ── Info/warning boxes inside expanders ── */
+  [data-testid="stExpander"] [data-testid="stAlert"] p { color: #ffffff !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -391,7 +422,41 @@ def yfinance_calendar_fallback(today, end_date):
 # ─── BSM Greeks (always used as primary) ─────────────────────────────────────
 from scipy.stats import norm as _norm
 
-def bsm_greeks(S, K, T, sigma, r=0.05):
+def bsm_call_price(S, K, T, sigma, r=0.05):
+    """BSM call price — used inside the IV solver."""
+    if T <= 0 or sigma <= 0:
+        return max(S - K, 0)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    return S * _norm.cdf(d1) - K * math.exp(-r * T) * _norm.cdf(d2)
+
+
+def implied_vol_from_mid(S, K, T, mid_price, r=0.05,
+                          lo=0.001, hi=5.0, tol=1e-5, max_iter=100):
+    """
+    Back-solve BSM for IV given the bid-ask mid price.
+    Uses bisection — robust, no risk of Newton divergence.
+    Returns None if the mid is outside the valid BSM price range.
+    """
+    try:
+        if mid_price <= 0 or T <= 0 or S <= 0 or K <= 0:
+            return None
+        intrinsic = max(S - K * math.exp(-r * T), 0)
+        if mid_price < intrinsic:
+            return None
+        # Bisection
+        for _ in range(max_iter):
+            mid_sigma = (lo + hi) / 2
+            price = bsm_call_price(S, K, T, mid_sigma, r)
+            if abs(price - mid_price) < tol:
+                return round(mid_sigma, 6)
+            if price < mid_price:
+                lo = mid_sigma
+            else:
+                hi = mid_sigma
+        return round((lo + hi) / 2, 6)
+    except Exception:
+        return None
     """
     Full Black-Scholes-Merton Greeks for a call option.
     S     = underlying price
@@ -509,13 +574,28 @@ def fetch_options_data(ticker, em_min, em_max, min_oi):
         atm_strike = float(front_calls.loc[atm_idx, 'strike'])
         atm_call   = front_calls.loc[atm_idx]
 
-        # ── IV from chain ────────────────────────────────────────────
-        front_iv = safe_get(atm_call.get('impliedVolatility'), None)
-        if front_iv is None or math.isnan(float(front_iv)) or float(front_iv) <= 0:
-            result['error'] = 'No valid front IV'
-            return result
-        front_iv = float(front_iv)
-        result['front_iv'] = front_iv
+        # ── IV from bid-ask mid (back-solved BSM) ────────────────────
+        T_front = front_dte / 365.0
+
+        call_bid = safe_get(atm_call.get('bid'), 0)
+        call_ask = safe_get(atm_call.get('ask'), 0)
+        call_mid = (float(call_bid) + float(call_ask)) / 2
+
+        front_iv = implied_vol_from_mid(price, atm_strike, T_front, call_mid)
+
+        # Fallback to Yahoo's figure if back-solve fails (e.g. stale/zero bid-ask)
+        if front_iv is None or front_iv <= 0:
+            front_iv = safe_get(atm_call.get('impliedVolatility'), None)
+            if front_iv:
+                front_iv = float(front_iv)
+                result['iv_source'] = 'yahoo_fallback'
+            else:
+                result['error'] = 'Could not determine front IV'
+                return result
+        else:
+            result['iv_source'] = 'bsm_backsolved'
+
+        result['front_iv'] = round(front_iv, 4)
 
         # ── Open interest ────────────────────────────────────────────
         result['open_interest'] = int(safe_get(atm_call.get('openInterest'), 0))
@@ -538,16 +618,27 @@ def fetch_options_data(ticker, em_min, em_max, min_oi):
             em = 0.8 * front_iv * math.sqrt(T)
         result['em'] = float(em)
 
-        # ── Back month IV + BSM cross-check ─────────────────────────
+        # ── Back month IV — back-solved from bid-ask mid ─────────────
         if not back_calls.empty:
-            back_atm_idx = (back_calls['strike'] - price).abs().idxmin()
-            back_iv_raw  = safe_get(back_calls.loc[back_atm_idx, 'impliedVolatility'], None)
-            if back_iv_raw and not math.isnan(float(back_iv_raw)) and float(back_iv_raw) > 0:
-                result['back_iv'] = float(back_iv_raw)
-            else:
-                result['back_iv'] = front_iv * 0.65
+            back_atm_idx  = (back_calls['strike'] - price).abs().idxmin()
+            back_atm_call = back_calls.loc[back_atm_idx]
+            back_atm_strike = float(back_atm_call['strike'])
+            T_back = max(back_dte, 1) / 365.0
+
+            b_bid = safe_get(back_atm_call.get('bid'), 0)
+            b_ask = safe_get(back_atm_call.get('ask'), 0)
+            b_mid = (float(b_bid) + float(b_ask)) / 2
+
+            back_iv = implied_vol_from_mid(price, back_atm_strike, T_back, b_mid)
+
+            # Fallback to Yahoo's figure
+            if back_iv is None or back_iv <= 0:
+                back_iv_raw = safe_get(back_atm_call.get('impliedVolatility'), None)
+                back_iv = float(back_iv_raw) if back_iv_raw and float(back_iv_raw) > 0 \
+                          else front_iv * 0.65
+            result['back_iv'] = round(back_iv, 4)
         else:
-            result['back_iv'] = front_iv * 0.65
+            result['back_iv'] = round(front_iv * 0.65, 4)
 
         # ── Term structure slope ─────────────────────────────────────
         result['slope']     = result['front_iv'] - result['back_iv']
@@ -922,7 +1013,8 @@ def main():
                     'breach_quarters': breach.get('quarters', 8),
                     'condor': condor,
                     'score': score,
-                    'rating': rating
+                    'rating': rating,
+                    'iv_source': opts.get('iv_source', 'unknown')
                 })
 
             progress.empty()
@@ -982,6 +1074,10 @@ def main():
                                delta="✓ Liquid" if r['liquidity_ok'] else "✗ Thin")
                     g11.metric("Score", f"{r['score']}/100")
                     g12.metric("Rating", r['rating'].upper())
+
+                    iv_src = r.get('iv_source', 'unknown')
+                    iv_label = "✓ Back-solved from bid-ask mid" if iv_src == 'bsm_backsolved' else "⚠ Yahoo Finance fallback"
+                    st.caption(f"IV Source: {iv_label}")
 
                 with tab2:
                     c = r['condor']
