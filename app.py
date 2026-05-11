@@ -297,6 +297,31 @@ def score_regime(r):
     return signals, verdict
 
 # ─── Earnings Calendar ────────────────────────────────────────────────────────
+OPTIONABLE_UNIVERSE = {
+    'AAPL','MSFT','GOOGL','GOOG','AMZN','META','NVDA','TSLA','AMD','NFLX',
+    'CRM','ORCL','ADBE','INTC','QCOM','TXN','AVGO','MU','AMAT','LRCX',
+    'KLAC','MRVL','SMCI','HPQ','DELL','STX','WDC','SNPS','CDNS',
+    'JPM','GS','MS','BAC','C','WFC','V','MA','PYPL','AXP','BLK','SCHW','COF',
+    'JNJ','PFE','MRK','ABBV','LLY','BMY','AMGN','GILD','MRNA','BIIB','REGN','VRTX',
+    'XOM','CVX','COP','SLB','HAL','MPC','VLO','PSX','OXY','DVN',
+    'WMT','TGT','COST','HD','LOW','NKE','SBUX','MCD','DIS','CMCSA','CHTR',
+    'T','VZ','TMUS','UBER','LYFT','ABNB','BKNG','DASH','SNAP','PINS','RDDT',
+    'BA','CAT','DE','MMM','GE','HON','RTX','LMT','NOC','GD','HII',
+    'SHOP','MELI','COIN','HOOD','RBLX','PLTR','SNOW','DDOG','CRWD','ZS',
+    'NET','OKTA','HUBS','VEEV','NOW','WDAY','TEAM','ZM','DOCU','MDB',
+    'SPOT','ROKU','TTD','MTCH','TWLO','S','GTLB','BILL','AFRM',
+    'F','GM','STLA','RIVN','LCID',
+    'WBA','CVS','MCK','CI','UNH','HUM','CNC','MOH',
+    'AMT','PLD','EQIX','CCI','SBAC',
+    'UAL','DAL','AAL','LUV','JBLU','ALK',
+    'MGM','WYNN','LVS','PENN','DKNG',
+    'SOFI','NU','RDFN','Z',
+    'PANW','FTNT','CYBR','PAYC',
+    'EXPE','YELP',
+    'X','NUE','CLF','AA','FCX','GOLD','NEM',
+    'DHI','LEN','TOL','PHM',
+}
+
 @st.cache_data(ttl=3600)
 def fetch_earnings_calendar(days_ahead):
     """Fetch upcoming earnings from Nasdaq earnings calendar API (free, no key)"""
@@ -369,29 +394,14 @@ def fetch_earnings_calendar(days_ahead):
         'TWLO','OKTA','HUBS','VEEV','NOW','WDAY','TEAM','ZM','DOCU'
     ])
 
-    # If Nasdaq returned results, filter to known optionable names OR large caps
-    # (Nasdaq API includes everything — we want liquid options candidates)
-    if len(found) > 20:
-        filtered = {}
-        for ticker, info in found.items():
-            # Keep if in our known liquid universe
-            if ticker in liquid_universe:
-                filtered[ticker] = info
-            # Or keep if market cap string suggests large/mid cap
-            elif info.get('market_cap') and info['market_cap'] not in ('', 'N/A', '--'):
-                try:
-                    mc_str = info['market_cap'].replace('$','').replace(',','').strip()
-                    if mc_str.endswith('B'):
-                        mc = float(mc_str[:-1])
-                        if mc >= 2.0:  # $2B+ market cap
-                            filtered[ticker] = info
-                    elif mc_str.endswith('T'):
-                        filtered[ticker] = info  # Always include trillion-cap
-                except:
-                    pass
-        found = filtered if len(filtered) >= 3 else found
+    # ── Filter to known optionable liquid names ───────────────────────────────
+    filtered = {t: v for t, v in found.items() if t in OPTIONABLE_UNIVERSE}
 
-    return found
+    # If filter is too aggressive (rare edge case), fall back to first 60 raw
+    if len(filtered) < 3:
+        filtered = dict(list(found.items())[:60])
+
+    return filtered
 
 
 def yfinance_calendar_fallback(today, end_date):
@@ -968,43 +978,9 @@ def main():
         if not earnings_map:
             st.warning("No upcoming earnings found for this window. Try extending the date range.")
         else:
-            # ── Filter to known optionable liquid names ───────────────
-            OPTIONABLE_UNIVERSE = {
-                'AAPL','MSFT','GOOGL','GOOG','AMZN','META','NVDA','TSLA','AMD','NFLX',
-                'CRM','ORCL','ADBE','INTC','QCOM','TXN','AVGO','MU','AMAT','LRCX',
-                'KLAC','MRVL','SMCI','HPQ','DELL','STX','WDC','SNPS','CDNS',
-                'JPM','GS','MS','BAC','C','WFC','V','MA','PYPL','AXP','BLK','SCHW','COF',
-                'JNJ','PFE','MRK','ABBV','LLY','BMY','AMGN','GILD','MRNA','BIIB','REGN','VRTX',
-                'XOM','CVX','COP','SLB','HAL','MPC','VLO','PSX','OXY','DVN',
-                'WMT','TGT','COST','HD','LOW','NKE','SBUX','MCD','DIS','CMCSA','CHTR',
-                'T','VZ','TMUS','UBER','LYFT','ABNB','BKNG','DASH','SNAP','PINS','RDDT',
-                'BA','CAT','DE','MMM','GE','HON','RTX','LMT','NOC','GD','HII',
-                'SHOP','MELI','COIN','HOOD','RBLX','PLTR','SNOW','DDOG','CRWD','ZS',
-                'NET','OKTA','HUBS','VEEV','NOW','WDAY','TEAM','ZM','DOCU','MDB',
-                'SPOT','ROKU','TTD','MTCH','TWLO','S','GTLB','BILL','AFRM',
-                'F','GM','STLA','RIVN','LCID',
-                'WBA','CVS','MCK','CI','UNH','HUM','CNC','MOH',
-                'AMT','PLD','EQIX','CCI','SBAC',
-                'UAL','DAL','AAL','LUV','JBLU','ALK',
-                'MGM','WYNN','LVS','PENN','DKNG',
-                'SOFI','NU','OPEN','RDFN','Z',
-                'PANW','FTNT','CYBR','RPM','PAYC',
-                'ABNB','EXPE','TRIP','YELP',
-                'X','NUE','CLF','AA','FCX','GOLD','NEM',
-                'DHI','LEN','TOL','PHM',
-                'UBER','DASH','LYFT',
-            }
-
-            # Keep only tickers in our optionable universe
-            filtered_map = {t: v for t, v in earnings_map.items() if t in OPTIONABLE_UNIVERSE}
-
-            # If filter is too aggressive, fall back to first 60 from Nasdaq list
-            if len(filtered_map) < 5:
-                filtered_map = dict(list(earnings_map.items())[:60])
-
-            st.info(f"Found {len(earnings_map)} upcoming reports — filtered to {len(filtered_map)} liquid optionable candidates...")
+            st.info(f"Found {len(earnings_map)} liquid optionable candidates — fetching options data...")
             progress = st.progress(0)
-            tickers = list(filtered_map.keys())
+            tickers = list(earnings_map.keys())
 
             for i, ticker in enumerate(tickers):
                 progress.progress((i + 1) / len(tickers), text=f"Analyzing {ticker}...")
@@ -1038,8 +1014,8 @@ def main():
 
                 st.session_state.results.append({
                     **opts,
-                    'earnings_date': filtered_map[ticker]['date'],
-                    'timing': filtered_map[ticker]['timing'],
+                    'earnings_date': earnings_map[ticker]['date'],
+                    'timing': earnings_map[ticker]['timing'],
                     'breach_count': breach['count'],
                     'breach_avg_mag': breach.get('avg_mag'),
                     'breach_quarters': breach.get('quarters', 8),
