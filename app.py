@@ -359,20 +359,25 @@ def fetch_earnings_calendar(days_ahead, min_market_cap_b=2.0):
                     if rows:
                         for row in rows:
                             ticker = row.get('symbol', '').strip().upper()
-                            # Basic format filter
                             if not ticker or '/' in ticker or '.' in ticker or len(ticker) > 5:
                                 continue
-                            # Market cap filter
-                            mc_b = parse_market_cap_billions(row.get('marketCap', ''))
-                            if mc_b is not None and mc_b < min_market_cap_b:
-                                continue  # Too small — skip
-                            # If no market cap data at all, keep it (we'll rely on OI filter)
+
+                            # Try multiple possible field names for market cap
+                            mc_raw = (row.get('marketCap') or row.get('mktCap') or
+                                      row.get('market_cap') or row.get('mktcap') or '')
+                            mc_b = parse_market_cap_billions(str(mc_raw))
+
+                            # Only keep if market cap is parseable AND meets threshold
+                            # This prevents unknown small caps from slipping through
+                            if mc_b is None or mc_b < min_market_cap_b:
+                                continue
+
                             time_str = row.get('time', '').lower()
                             timing = 'BMO' if 'before' in time_str else 'AMC'
                             found[ticker] = {
-                                'date':       date_cursor,
-                                'timing':     timing,
-                                'market_cap': row.get('marketCap', ''),
+                                'date':         date_cursor,
+                                'timing':       timing,
+                                'market_cap':   mc_raw,
                                 'market_cap_b': mc_b,
                             }
             except Exception:
@@ -380,11 +385,22 @@ def fetch_earnings_calendar(days_ahead, min_market_cap_b=2.0):
         date_cursor += timedelta(days=1)
         time.sleep(0.2)
 
-    if len(found) < 3:
-        st.warning("Nasdaq calendar unavailable — falling back to yfinance scan.")
+    # ── If Nasdaq market cap data is sparse, fall back to known liquid names ──
+    if len(found) < 5:
+        st.warning("Nasdaq market cap data unavailable — using curated liquid universe.")
         found = yfinance_calendar_fallback(today, end_date)
+        return found
 
-    return found
+    # ── Sort by market cap descending so largest caps get scanned first ───────
+    sorted_found = dict(
+        sorted(found.items(), key=lambda x: x[1].get('market_cap_b') or 0, reverse=True)
+    )
+
+    # ── Hard cap: never scan more than 100 tickers regardless ────────────────
+    if len(sorted_found) > 100:
+        sorted_found = dict(list(sorted_found.items())[:100])
+
+    return sorted_found
 
 
 def yfinance_calendar_fallback(today, end_date):
@@ -1012,7 +1028,7 @@ def main():
         if not earnings_map:
             st.warning("No upcoming earnings found for this window. Try extending the date range.")
         else:
-            st.info(f"Found {len(earnings_map)} candidates with market cap ≥ ${min_market_cap:.1f}B — fetching options data...")
+            st.info(f"Found {len(earnings_map)} candidates (market cap ≥ ${min_market_cap:.1f}B, max 100) — fetching options data...")
             progress = st.progress(0)
             tickers = list(earnings_map.keys())
 
