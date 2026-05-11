@@ -51,7 +51,7 @@ st.markdown("""
 
   /* ── Caption text ── */
   section.main [data-testid="stCaptionContainer"] p,
-  section.main small { color: #b0b8c8 !important; font-size: 12px !important; }
+  section.main small { color: #ffffff !important; font-size: 12px !important; }
 
   /* ── Markdown bold inside expanders ── */
   section.main [data-testid="stExpander"] strong { color: #ffffff !important; }
@@ -1221,7 +1221,7 @@ margin-top:12px;font-family:'Space Mono',monospace;font-size:11px;color:#d0dce8;
         <div style='text-align:center;padding:60px 20px'>
           <div style='font-size:48px;margin-bottom:16px;opacity:0.3'>◈</div>
           <div style='font-family:"Syne",sans-serif;font-size:16px;font-weight:700;color:#ffffff;margin-bottom:8px'>No results yet</div>
-          <div style='font-family:"Space Mono",monospace;font-size:11px;color:#7a8898'>Configure thresholds in the sidebar and click Run Screener</div>
+          <div style='font-family:"Space Mono",monospace;font-size:11px;color:#ffffff'>Configure thresholds in the sidebar and click Run Screener</div>
         </div>""", unsafe_allow_html=True)
 
     # ── Debug / Skipped — bottom of page ────────────────────────────────────
