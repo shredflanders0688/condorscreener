@@ -1105,11 +1105,11 @@ def main():
         st.markdown(f"Showing **{len(filtered)}** of {len(results)} results")
 
         def card(label, value, sub=None, color='#ffffff'):
-            sub_html = f'<div style="font-size:11px;color:#a0b0c0;margin-top:3px">{sub}</div>' if sub else ''
+            sub_html = f'<div style="font-size:11px;color:#ffffff;margin-top:3px">{sub}</div>' if sub else ''
             return (
                 f'<div style="background:#1c2230;border:1px solid #2e3a4e;border-radius:8px;'
                 f'padding:12px 14px;height:100%">'
-                f'<div style="font-family:\'Space Mono\',monospace;font-size:9px;color:#6a7a8a;'
+                f'<div style="font-family:\'Space Mono\',monospace;font-size:9px;color:#ffffff;'
                 f'letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px">{label}</div>'
                 f'<div style="font-family:\'Space Mono\',monospace;font-size:15px;font-weight:700;'
                 f'color:{color}">{value}</div>{sub_html}</div>'
