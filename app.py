@@ -47,7 +47,7 @@ st.markdown("""
   /* ── All paragraph text inside expanders ── */
   section.main [data-testid="stExpander"] p,
   section.main [data-testid="stExpander"] label,
-  section.main [data-testid="stExpander"] span { color: #e8eaf0 !important; }
+  section.main [data-testid="stExpander"] span { color: #ffffff !important; }
 
   /* ── Caption text ── */
   section.main [data-testid="stCaptionContainer"] p,
