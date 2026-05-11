@@ -1155,7 +1155,7 @@ def main():
                                                "✓ Liquid" if r['liquidity_ok'] else "✗ Thin",
                                                '#00e676' if r['liquidity_ok'] else '#ff4d6a'), unsafe_allow_html=True)
                     with g11: st.markdown(card("Score",  f"{r['score']}/100"), unsafe_allow_html=True)
-                    with g12: st.markdown(card("Rating", r['rating'].upper(), value_color=rating_color), unsafe_allow_html=True)
+                    with g12: st.markdown(card("Rating", r['rating'].upper(), color=rating_color), unsafe_allow_html=True)
 
                 with tab2:
                     c = r['condor']
