@@ -25,32 +25,30 @@ st.markdown("""
 
   .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
 
-  /* ── Force all Streamlit metric labels and values to white ── */
-  [data-testid="stMetricLabel"] p,
-  [data-testid="stMetricLabel"] label,
-  [data-testid="stMetricLabel"] { color: #ffffff !important; font-weight: 600 !important; }
+  /* ── Metric labels and values — main content only ── */
+  .main [data-testid="stMetricLabel"] p,
+  .main [data-testid="stMetricLabel"] label,
+  .main [data-testid="stMetricLabel"] { color: #ffffff !important; font-weight: 600 !important; }
 
-  [data-testid="stMetricValue"] { color: #ffffff !important; font-weight: 700 !important; }
+  .main [data-testid="stMetricValue"] { color: #ffffff !important; font-weight: 700 !important; }
 
-  [data-testid="stMetricDelta"] { font-size: 11px !important; }
+  .main [data-testid="stMetricDelta"] { font-size: 11px !important; }
 
-  /* ── Expander headers — ticker results ── */
-  [data-testid="stExpander"] summary p,
-  [data-testid="stExpander"] summary span,
-  [data-testid="stExpander"] summary { color: #ffffff !important; font-weight: 700 !important; font-size: 15px !important; }
+  /* ── Expander headers ── */
+  .main [data-testid="stExpander"] summary p,
+  .main [data-testid="stExpander"] summary span,
+  .main [data-testid="stExpander"] summary { color: #ffffff !important; font-weight: 700 !important; font-size: 15px !important; }
 
   /* ── Tab labels ── */
-  [data-testid="stTabs"] button p,
-  [data-testid="stTabs"] button { color: #ffffff !important; font-weight: 600 !important; }
+  .main [data-testid="stTabs"] button p,
+  .main [data-testid="stTabs"] button { color: #ffffff !important; font-weight: 600 !important; }
 
-  /* ── General text inside expanders ── */
-  [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p,
-  [data-testid="stExpander"] label,
-  [data-testid="stExpander"] p { color: #e8eaf0 !important; }
+  /* ── Text inside expanders ── */
+  .main [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p,
+  .main [data-testid="stExpander"] p { color: #e8eaf0 !important; }
 
-  /* ── Sidebar labels ── */
-  [data-testid="stSidebar"] label,
-  [data-testid="stSidebar"] p { color: #e8eaf0 !important; }
+  /* ── Info/warning boxes inside expanders ── */
+  .main [data-testid="stExpander"] [data-testid="stAlert"] p { color: #ffffff !important; }
 
   .metric-card {
     background: #111318;
@@ -970,9 +968,43 @@ def main():
         if not earnings_map:
             st.warning("No upcoming earnings found for this window. Try extending the date range.")
         else:
-            st.info(f"Found {len(earnings_map)} upcoming earnings reports — fetching options data...")
+            # ── Filter to known optionable liquid names ───────────────
+            OPTIONABLE_UNIVERSE = {
+                'AAPL','MSFT','GOOGL','GOOG','AMZN','META','NVDA','TSLA','AMD','NFLX',
+                'CRM','ORCL','ADBE','INTC','QCOM','TXN','AVGO','MU','AMAT','LRCX',
+                'KLAC','MRVL','SMCI','HPQ','DELL','STX','WDC','SNPS','CDNS',
+                'JPM','GS','MS','BAC','C','WFC','V','MA','PYPL','AXP','BLK','SCHW','COF',
+                'JNJ','PFE','MRK','ABBV','LLY','BMY','AMGN','GILD','MRNA','BIIB','REGN','VRTX',
+                'XOM','CVX','COP','SLB','HAL','MPC','VLO','PSX','OXY','DVN',
+                'WMT','TGT','COST','HD','LOW','NKE','SBUX','MCD','DIS','CMCSA','CHTR',
+                'T','VZ','TMUS','UBER','LYFT','ABNB','BKNG','DASH','SNAP','PINS','RDDT',
+                'BA','CAT','DE','MMM','GE','HON','RTX','LMT','NOC','GD','HII',
+                'SHOP','MELI','COIN','HOOD','RBLX','PLTR','SNOW','DDOG','CRWD','ZS',
+                'NET','OKTA','HUBS','VEEV','NOW','WDAY','TEAM','ZM','DOCU','MDB',
+                'SPOT','ROKU','TTD','MTCH','TWLO','S','GTLB','BILL','AFRM',
+                'F','GM','STLA','RIVN','LCID',
+                'WBA','CVS','MCK','CI','UNH','HUM','CNC','MOH',
+                'AMT','PLD','EQIX','CCI','SBAC',
+                'UAL','DAL','AAL','LUV','JBLU','ALK',
+                'MGM','WYNN','LVS','PENN','DKNG',
+                'SOFI','NU','OPEN','RDFN','Z',
+                'PANW','FTNT','CYBR','RPM','PAYC',
+                'ABNB','EXPE','TRIP','YELP',
+                'X','NUE','CLF','AA','FCX','GOLD','NEM',
+                'DHI','LEN','TOL','PHM',
+                'UBER','DASH','LYFT',
+            }
+
+            # Keep only tickers in our optionable universe
+            filtered_map = {t: v for t, v in earnings_map.items() if t in OPTIONABLE_UNIVERSE}
+
+            # If filter is too aggressive, fall back to first 60 from Nasdaq list
+            if len(filtered_map) < 5:
+                filtered_map = dict(list(earnings_map.items())[:60])
+
+            st.info(f"Found {len(earnings_map)} upcoming reports — filtered to {len(filtered_map)} liquid optionable candidates...")
             progress = st.progress(0)
-            tickers = list(earnings_map.keys())
+            tickers = list(filtered_map.keys())
 
             for i, ticker in enumerate(tickers):
                 progress.progress((i + 1) / len(tickers), text=f"Analyzing {ticker}...")
@@ -1006,8 +1038,8 @@ def main():
 
                 st.session_state.results.append({
                     **opts,
-                    'earnings_date': earnings_map[ticker]['date'],
-                    'timing': earnings_map[ticker]['timing'],
+                    'earnings_date': filtered_map[ticker]['date'],
+                    'timing': filtered_map[ticker]['timing'],
                     'breach_count': breach['count'],
                     'breach_avg_mag': breach.get('avg_mag'),
                     'breach_quarters': breach.get('quarters', 8),
@@ -1162,5 +1194,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-app.py
-#Displaying app.py. 
