@@ -388,32 +388,72 @@ def yfinance_calendar_fallback(today, end_date):
             pass
     return found
 
+# ─── BSM Greeks (always used as primary) ─────────────────────────────────────
+from scipy.stats import norm as _norm
+
+def bsm_greeks(S, K, T, sigma, r=0.05):
+    """
+    Full Black-Scholes-Merton Greeks for a call option.
+    S     = underlying price
+    K     = strike
+    T     = time to expiry in years
+    sigma = implied volatility (decimal)
+    r     = risk-free rate
+    Returns (delta, gamma, theta, vega)
+    """
+    try:
+        if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+            return 0.50, 0.02, -0.10, 0.20
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+        delta = _norm.cdf(d1)
+        gamma = _norm.pdf(d1) / (S * sigma * math.sqrt(T))
+        # Theta in per-day terms
+        theta = (
+            -(S * _norm.pdf(d1) * sigma) / (2 * math.sqrt(T))
+            - r * K * math.exp(-r * T) * _norm.cdf(d2)
+        ) / 365
+        # Vega per 1% move in IV
+        vega = S * _norm.pdf(d1) * math.sqrt(T) / 100
+        return (
+            round(delta, 4),
+            round(gamma, 4),
+            round(theta, 4),
+            round(vega,  4)
+        )
+    except Exception:
+        return 0.50, 0.02, -0.10, 0.20
+
+
 # ─── Options Data ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def fetch_options_data(ticker, em_min, em_max, min_oi):
-    """Fetch live options chain and calculate all metrics"""
+    """Fetch live options chain, calculate BSM Greeks, return real strike lists"""
     result = {
-        'ticker': ticker,
-        'price': None,
-        'front_iv': None,
-        'back_iv': None,
-        'slope': None,
-        'slope_pct': None,
-        'delta': None,
-        'gamma': None,
-        'theta': None,
-        'vega': None,
-        'em': None,
-        'em_flag': 'unknown',
+        'ticker':       ticker,
+        'price':        None,
+        'front_iv':     None,
+        'back_iv':      None,
+        'slope':        None,
+        'slope_pct':    None,
+        'delta':        None,
+        'gamma':        None,
+        'theta':        None,
+        'vega':         None,
+        'em':           None,
+        'em_flag':      'unknown',
         'open_interest': None,
         'liquidity_ok': False,
-        'error': None
+        # Real strike lists for snapping condor recommendations
+        'call_strikes': [],
+        'put_strikes':  [],
+        'error':        None
     }
 
     try:
         t = yf.Ticker(ticker)
 
-        # Current price
+        # ── Current price ────────────────────────────────────────────
         hist = t.history(period="2d")
         if hist.empty:
             result['error'] = 'No price data'
@@ -421,27 +461,25 @@ def fetch_options_data(ticker, em_min, em_max, min_oi):
         price = float(hist['Close'].iloc[-1])
         result['price'] = price
 
-        # Get options expiries
+        # ── Expiries ─────────────────────────────────────────────────
         expiries = t.options
         if not expiries or len(expiries) < 2:
             result['error'] = 'Insufficient expiries'
             return result
 
         today = datetime.now().date()
-
-        # Find front month (nearest expiry, ideally 0-14 DTE)
-        front_expiry = None
-        back_expiry = None
+        front_expiry = front_dte = None
+        back_expiry  = back_dte  = None
 
         for exp in expiries:
             exp_date = datetime.strptime(exp, '%Y-%m-%d').date()
             dte = (exp_date - today).days
             if front_expiry is None and dte >= 0:
                 front_expiry = exp
-                front_dte = dte
+                front_dte    = max(dte, 1)   # avoid zero division
             elif back_expiry is None and dte >= 20:
                 back_expiry = exp
-                back_dte = dte
+                back_dte    = dte
             if front_expiry and back_expiry:
                 break
 
@@ -449,117 +487,137 @@ def fetch_options_data(ticker, em_min, em_max, min_oi):
             result['error'] = 'Could not find suitable expiries'
             return result
 
-        # Fetch option chains
+        # ── Fetch chains ─────────────────────────────────────────────
         front_chain = t.option_chain(front_expiry)
         back_chain  = t.option_chain(back_expiry)
 
-        # ATM strike = nearest to current price
         front_calls = front_chain.calls
+        front_puts  = front_chain.puts
+        back_calls  = back_chain.calls
+
         if front_calls.empty:
             result['error'] = 'No front month calls'
             return result
 
-        # Find ATM strike
-        atm_idx = (front_calls['strike'] - price).abs().idxmin()
-        atm_strike = front_calls.loc[atm_idx, 'strike']
+        # ── Store real available strikes ──────────────────────────────
+        result['call_strikes'] = sorted(front_calls['strike'].dropna().tolist())
+        result['put_strikes']  = sorted(front_puts['strike'].dropna().tolist()
+                                        if not front_puts.empty else result['call_strikes'])
 
-        # Front month ATM call
-        atm_call = front_calls.loc[atm_idx]
-        front_iv = safe_get(atm_call.get('impliedVolatility'), 0)
-        result['front_iv'] = float(front_iv)
+        # ── ATM strike ───────────────────────────────────────────────
+        atm_idx    = (front_calls['strike'] - price).abs().idxmin()
+        atm_strike = float(front_calls.loc[atm_idx, 'strike'])
+        atm_call   = front_calls.loc[atm_idx]
+
+        # ── IV from chain ────────────────────────────────────────────
+        front_iv = safe_get(atm_call.get('impliedVolatility'), None)
+        if front_iv is None or math.isnan(float(front_iv)) or float(front_iv) <= 0:
+            result['error'] = 'No valid front IV'
+            return result
+        front_iv = float(front_iv)
+        result['front_iv'] = front_iv
+
+        # ── Open interest ────────────────────────────────────────────
         result['open_interest'] = int(safe_get(atm_call.get('openInterest'), 0))
-        result['liquidity_ok'] = result['open_interest'] >= min_oi
+        result['liquidity_ok']  = result['open_interest'] >= min_oi
 
-        # Greeks from front month ATM call
-        result['delta'] = safe_get(atm_call.get('delta'), 0.50)
-        result['gamma'] = safe_get(atm_call.get('gamma'), 0.02)
-        result['theta'] = safe_get(atm_call.get('theta'), -0.10)
-        result['vega']  = safe_get(atm_call.get('vega'),  0.20)
+        # ── BSM Greeks — always computed, never rely on yfinance ─────
+        T = front_dte / 365.0
+        result['delta'], result['gamma'], result['theta'], result['vega'] = \
+            bsm_greeks(price, atm_strike, T, front_iv)
 
-        # If Greeks not in chain (yfinance doesn't always provide them), estimate from BSM
-        if result['delta'] == 0.50 and result['gamma'] == 0.02:
-            result['delta'], result['gamma'], result['theta'], result['vega'] = \
-                estimate_greeks(price, atm_strike, front_dte / 365, front_iv)
-
-        # Expected move = front month ATM straddle price / stock price
-        front_puts = front_chain.puts
+        # ── Expected move = ATM straddle mid / price ─────────────────
         atm_put_rows = front_puts[front_puts['strike'] == atm_strike]
         if not atm_put_rows.empty:
-            call_mid = (atm_call['bid'] + atm_call['ask']) / 2
-            put_mid  = (atm_put_rows.iloc[0]['bid'] + atm_put_rows.iloc[0]['ask']) / 2
+            call_mid = (float(atm_call['bid']) + float(atm_call['ask'])) / 2
+            put_mid  = (float(atm_put_rows.iloc[0]['bid']) +
+                        float(atm_put_rows.iloc[0]['ask'])) / 2
             em = (call_mid + put_mid) / price
         else:
-            # Fallback: estimate EM from IV
-            em = front_iv * math.sqrt(front_dte / 365) * 0.8
+            # Fallback: Black-Scholes ATM approximation  ≈ 0.8 × σ × √T
+            em = 0.8 * front_iv * math.sqrt(T)
         result['em'] = float(em)
 
-        # Back month IV
-        back_calls = back_chain.calls
+        # ── Back month IV + BSM cross-check ─────────────────────────
         if not back_calls.empty:
             back_atm_idx = (back_calls['strike'] - price).abs().idxmin()
-            back_iv = safe_get(back_calls.loc[back_atm_idx, 'impliedVolatility'], 0)
-            result['back_iv'] = float(back_iv)
+            back_iv_raw  = safe_get(back_calls.loc[back_atm_idx, 'impliedVolatility'], None)
+            if back_iv_raw and not math.isnan(float(back_iv_raw)) and float(back_iv_raw) > 0:
+                result['back_iv'] = float(back_iv_raw)
+            else:
+                result['back_iv'] = front_iv * 0.65
         else:
-            result['back_iv'] = float(front_iv * 0.65)
+            result['back_iv'] = front_iv * 0.65
 
-        # Term structure slope
-        result['slope'] = result['front_iv'] - result['back_iv']
+        # ── Term structure slope ─────────────────────────────────────
+        result['slope']     = result['front_iv'] - result['back_iv']
         result['slope_pct'] = (result['slope'] / max(result['back_iv'], 0.01)) * 100
 
-        # EM flag
-        if em_min <= result['em'] <= em_max:
+        # ── EM flag ──────────────────────────────────────────────────
+        em = result['em']
+        if em_min <= em <= em_max:
             result['em_flag'] = 'green'
-        elif result['em'] < em_min * 0.7 or result['em'] > em_max * 1.4:
+        elif em < em_min * 0.7 or em > em_max * 1.4:
             result['em_flag'] = 'red'
         else:
             result['em_flag'] = 'yellow'
 
     except Exception as e:
-        result['error'] = str(e)[:60]
+        result['error'] = str(e)[:80]
 
     return result
 
-def estimate_greeks(S, K, T, sigma, r=0.05):
-    """Black-Scholes Greeks approximation"""
-    try:
-        if T <= 0 or sigma <= 0:
-            return 0.5, 0.02, -0.10, 0.20
-        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        from scipy.stats import norm
-        delta = norm.cdf(d1)
-        gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
-        theta = (-(S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365
-        vega  = S * norm.pdf(d1) * math.sqrt(T) / 100
-        return round(delta, 4), round(gamma, 4), round(theta, 4), round(vega, 4)
-    except:
-        return 0.50, 0.02, -0.10, 0.20
+# ─── Strike Snapping Helper ───────────────────────────────────────────────────
+def snap_to_real_strike(target, available_strikes, direction='nearest'):
+    """
+    Snap a target price to the nearest real strike in the chain.
+    direction: 'nearest' | 'above' | 'below'
+    """
+    if not available_strikes:
+        return round(target / 0.5) * 0.5  # fallback if no chain
+    strikes = sorted(available_strikes)
+    if direction == 'above':
+        above = [s for s in strikes if s >= target]
+        return float(above[0]) if above else float(strikes[-1])
+    elif direction == 'below':
+        below = [s for s in strikes if s <= target]
+        return float(below[-1]) if below else float(strikes[0])
+    else:
+        return float(min(strikes, key=lambda s: abs(s - target)))
+
 
 # ─── Condor Strikes ───────────────────────────────────────────────────────────
-def recommend_condor(price, em, iv, breach_count, breach_quarters, breach_avg_mag, slope_threshold):
-    """Recommend iron condor strikes balancing breach probability and credit"""
-
-    # Guard against None/NaN inputs
+def recommend_condor(price, em, iv, breach_count, breach_quarters, breach_avg_mag,
+                     slope_threshold, call_strikes=None, put_strikes=None):
+    """
+    Recommend iron condor strikes, snapped to real available strikes.
+    call_strikes / put_strikes: actual strike lists from the options chain.
+    """
+    # ── Input validation ──────────────────────────────────────────────────────
     try:
         price = float(price)
         em    = float(em)
         iv    = float(iv)
         if any(math.isnan(v) or math.isinf(v) for v in [price, em, iv]):
-            raise ValueError("NaN or Inf in inputs")
+            raise ValueError("NaN/Inf")
         if price <= 0 or em <= 0:
-            raise ValueError("Non-positive price or EM")
+            raise ValueError("Non-positive")
     except Exception:
         return {
             'short_call': 0, 'long_call': 0, 'short_put': 0, 'long_put': 0,
             'wing_width': 0, 'credit': 0, 'max_loss': 0,
-            'prob_profit': 0, 'ev': 0, 'breach_rate': 0, 'buffer_used': 1.0
+            'prob_profit': 0, 'ev': 0, 'breach_rate': 0, 'buffer_used': 1.0,
+            'strikes_real': False
         }
 
-    # Adjust buffer for breach history
-    buffer = 1.05  # Default: place strikes just beyond EM
+    call_strikes = call_strikes or []
+    put_strikes  = put_strikes  or []
+
+    # ── Breach-adjusted buffer ────────────────────────────────────────────────
+    buffer     = 1.05
     breach_rate = 0.0
 
-    if breach_count is not None and breach_quarters and breach_quarters > 0:
+    if breach_count is not None and breach_quarters and int(breach_quarters) > 0:
         try:
             breach_rate = int(breach_count) / int(breach_quarters)
             if breach_rate > 0.5:    buffer = 1.35
@@ -567,43 +625,62 @@ def recommend_condor(price, em, iv, breach_count, breach_quarters, breach_avg_ma
             else:                    buffer = 1.0
             if breach_avg_mag and not math.isnan(float(breach_avg_mag)):
                 buffer += float(breach_avg_mag) * 0.4
-        except:
+        except Exception:
             pass
 
-    move_amount = price * em * buffer
+    # ── Ideal (mathematical) short strikes ───────────────────────────────────
+    move_amount      = price * em * buffer
+    ideal_short_call = price + move_amount
+    ideal_short_put  = price - move_amount
 
-    # Wing width: ~2.5-5% of stock price, rounded to nearest $0.50
-    wing_width = max(2.5, round(price * 0.03 / 0.5) * 0.5)
+    # ── Snap to nearest REAL strikes ─────────────────────────────────────────
+    # Short call: snap to first real strike AT or ABOVE ideal
+    # Short put:  snap to first real strike AT or BELOW ideal
+    short_call = snap_to_real_strike(ideal_short_call, call_strikes, direction='above')
+    short_put  = snap_to_real_strike(ideal_short_put,  put_strikes,  direction='below')
 
-    short_call = round((price + move_amount) / 0.5) * 0.5
-    long_call  = short_call + wing_width
-    short_put  = round((price - move_amount) / 0.5) * 0.5
-    long_put   = short_put  - wing_width
+    # ── Wing width: next available strike beyond each short ───────────────────
+    # Long call = next real strike above short call
+    # Long put  = next real strike below short put
+    long_call = snap_to_real_strike(short_call + 0.01, call_strikes, direction='above')
+    long_put  = snap_to_real_strike(short_put  - 0.01, put_strikes,  direction='below')
 
-    # Credit estimate: function of IV and wing width
-    # Higher IV = more credit; typical range 12-22% of wing width
+    # Ensure long != short (edge case when at chain boundary)
+    if long_call == short_call and call_strikes:
+        above = [s for s in sorted(call_strikes) if s > short_call]
+        long_call = float(above[0]) if above else short_call + 2.5
+    if long_put == short_put and put_strikes:
+        below = [s for s in sorted(put_strikes, reverse=True) if s < short_put]
+        long_put = float(below[0]) if below else short_put - 2.5
+
+    call_wing = round(long_call - short_call, 2)
+    put_wing  = round(short_put - long_put,   2)
+    wing_width = min(call_wing, put_wing)   # use the tighter side for conservative math
+
+    # ── Credit and max loss estimate ─────────────────────────────────────────
     credit_pct = max(0.10, min(0.25, 0.10 + (iv - 0.25) * 0.3))
-    credit     = round(wing_width * credit_pct * 2, 2)  # Both sides
-    max_loss   = round(wing_width - (credit / 2), 2)    # Per side
+    credit     = round(wing_width * credit_pct * 2, 2)   # both sides combined
+    max_loss   = round(wing_width - (credit / 2), 2)      # per side
 
-    # Prob profit estimate
+    # ── Probability and EV ────────────────────────────────────────────────────
     prob_profit = max(40, min(90, int((1 - breach_rate) * 100 - 5)))
-
-    # Expected value per contract
-    ev = (credit * 100 * prob_profit/100) - (max_loss * 100 * (1 - prob_profit/100))
+    ev = (credit * 100 * prob_profit / 100) - (max_loss * 100 * (1 - prob_profit / 100))
 
     return {
-        'short_call': short_call,
-        'long_call':  long_call,
-        'short_put':  short_put,
-        'long_put':   long_put,
-        'wing_width': wing_width,
-        'credit':     credit,
-        'max_loss':   max_loss,
-        'prob_profit': prob_profit,
-        'ev':         round(ev, 2),
-        'breach_rate': breach_rate,
-        'buffer_used': buffer
+        'short_call':   short_call,
+        'long_call':    long_call,
+        'short_put':    short_put,
+        'long_put':     long_put,
+        'call_wing':    call_wing,
+        'put_wing':     put_wing,
+        'wing_width':   wing_width,
+        'credit':       credit,
+        'max_loss':     max_loss,
+        'prob_profit':  prob_profit,
+        'ev':           round(ev, 2),
+        'breach_rate':  breach_rate,
+        'buffer_used':  buffer,
+        'strikes_real': bool(call_strikes and put_strikes)
     }
 
 # ─── Scoring ──────────────────────────────────────────────────────────────────
@@ -831,7 +908,9 @@ def main():
                 condor = recommend_condor(
                     opts['price'], opts['em'], opts['front_iv'],
                     breach['count'], breach.get('quarters', 8),
-                    breach.get('avg_mag'), slope_threshold
+                    breach.get('avg_mag'), slope_threshold,
+                    call_strikes=opts.get('call_strikes', []),
+                    put_strikes=opts.get('put_strikes', [])
                 )
 
                 st.session_state.results.append({
@@ -919,6 +998,11 @@ def main():
                     m2.metric("Max Loss",       dollar(c['max_loss'] * 100, 0) + "/contract")
                     m3.metric("Est. Prob Profit", f"{c['prob_profit']}%")
                     m4.metric("Expected Value", dollar(c['ev']) + "/contract")
+
+                    w1, w2, w3 = st.columns(3)
+                    w1.metric("Call Wing Width", dollar(c['call_wing']))
+                    w2.metric("Put Wing Width",  dollar(c['put_wing']))
+                    w3.metric("Strikes",         "✓ Real chain" if c.get('strikes_real') else "⚠ Estimated")
 
                     st.info(f"""
 **Pre-commit exit rules (write these down before entering):**
