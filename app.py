@@ -441,6 +441,9 @@ def implied_vol_from_mid(S, K, T, mid_price, r=0.05,
         return round((lo + hi) / 2, 6)
     except Exception:
         return None
+
+
+def bsm_greeks(S, K, T, sigma, r=0.05):
     """
     Full Black-Scholes-Merton Greeks for a call option.
     S     = underlying price
@@ -457,12 +460,10 @@ def implied_vol_from_mid(S, K, T, mid_price, r=0.05,
         d2 = d1 - sigma * math.sqrt(T)
         delta = _norm.cdf(d1)
         gamma = _norm.pdf(d1) / (S * sigma * math.sqrt(T))
-        # Theta in per-day terms
         theta = (
             -(S * _norm.pdf(d1) * sigma) / (2 * math.sqrt(T))
             - r * K * math.exp(-r * T) * _norm.cdf(d2)
         ) / 365
-        # Vega per 1% move in IV
         vega = S * _norm.pdf(d1) * math.sqrt(T) / 100
         return (
             round(delta, 4),
@@ -1002,9 +1003,27 @@ def main():
             tickers = list(earnings_map.keys())
 
             skipped = {}
+            debug_shown = False
             for i, ticker in enumerate(tickers):
                 progress.progress((i + 1) / len(tickers), text=f"Analyzing {ticker}...")
                 opts = fetch_options_data(ticker, em_min, em_max, min_oi)
+
+                # Show raw debug for first ticker regardless of outcome
+                if not debug_shown:
+                    debug_shown = True
+                    with st.expander(f"🔍 DEBUG — first ticker: {ticker}", expanded=True):
+                        st.json({
+                            'ticker':     opts.get('ticker'),
+                            'price':      opts.get('price'),
+                            'front_iv':   opts.get('front_iv'),
+                            'back_iv':    opts.get('back_iv'),
+                            'em':         opts.get('em'),
+                            'slope':      opts.get('slope'),
+                            'error':      opts.get('error'),
+                            'iv_source':  opts.get('iv_source'),
+                            'oi':         opts.get('open_interest'),
+                            'call_strikes_count': len(opts.get('call_strikes', [])),
+                        })
 
                 if opts['error'] or opts['price'] is None or opts['em'] is None or opts['front_iv'] is None:
                     reason = opts.get('error') or 'missing data'
