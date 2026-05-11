@@ -39,7 +39,6 @@ st.markdown("""
   section.main [data-testid="stExpander"] summary,
   section.main [data-testid="stExpander"] summary *,
   section.main [data-testid="stExpander"] summary p { color: #ffffff !important; font-weight: 700 !important; font-size: 15px !important; }
-  section.main [data-testid="stExpander"] summary div { color: #ffffff !important; }
 
   /* ── Tab button text ── */
   section.main button[data-baseweb="tab"],
