@@ -370,34 +370,10 @@ def fetch_earnings_calendar(days_ahead):
         st.warning("Nasdaq calendar unavailable — falling back to yfinance earnings_dates scan.")
         found = yfinance_calendar_fallback(today, end_date)
 
-    # ── Filter to optionable liquid tickers only ──────────────────────────────
-    # Remove obvious non-optionable names (very small caps, foreign ordinaries)
-    liquid_universe = set([
-        'AAPL','MSFT','GOOGL','GOOG','AMZN','META','NVDA','TSLA','AMD','NFLX','CRM',
-        'ORCL','ADBE','INTC','QCOM','TXN','AVGO','MU','AMAT','LRCX','KLAC','MRVL',
-        'JPM','GS','MS','BAC','C','WFC','V','MA','PYPL','AXP','BLK','SCHW',
-        'JNJ','PFE','MRK','ABBV','LLY','BMY','AMGN','GILD','MRNA','BIIB','REGN',
-        'XOM','CVX','COP','SLB','HAL','MPC','VLO','PSX','OXY',
-        'WMT','TGT','COST','HD','LOW','NKE','SBUX','MCD','DIS','CMCSA','CHTR',
-        'T','VZ','TMUS','UBER','LYFT','ABNB','BKNG','DASH','SNAP','PINS','RDDT',
-        'BA','CAT','DE','MMM','GE','HON','RTX','LMT','NOC','GD',
-        'SHOP','MELI','COIN','HOOD','RBLX','PLTR','SNOW','DDOG','CRWD','ZS','NET',
-        'SPOT','ROKU','TTD','MTCH','IAC','YELP','TRIP',
-        'F','GM','STLA','RIVN','LCID',
-        'WBA','CVS','MCK','CI','UNH','HUM','CNC',
-        'AMT','PLD','EQIX','CCI','SBAC',
-        'PYPL','SQ','AFRM','SOFI','NU',
-        'SMCI','HPQ','HPE','DELL','STX','WDC',
-        'UAL','DAL','AAL','LUV','JBLU',
-        'MGM','WYNN','LVS','PENN','DKNG',
-        'Z','OPEN','RDFN',
-        'TWLO','OKTA','HUBS','VEEV','NOW','WDAY','TEAM','ZM','DOCU'
-    ])
-
     # ── Filter to known optionable liquid names ───────────────────────────────
     filtered = {t: v for t, v in found.items() if t in OPTIONABLE_UNIVERSE}
 
-    # If filter is too aggressive (rare edge case), fall back to first 60 raw
+    # If filter is too aggressive fall back to first 60 raw
     if len(filtered) < 3:
         filtered = dict(list(found.items())[:60])
 
@@ -501,43 +477,52 @@ def implied_vol_from_mid(S, K, T, mid_price, r=0.05,
 # ─── Options Data ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def fetch_options_data(ticker, em_min, em_max, min_oi):
-    """Fetch live options chain, calculate BSM Greeks, return real strike lists"""
+    """
+    Fetch live options chain. IV priority:
+      1. Back-solve BSM from bid-ask mid (most accurate)
+      2. Yahoo's impliedVolatility field (fallback)
+      3. BSM approximation from last price (last resort)
+    Never hard-fails on IV — always returns something usable.
+    """
     result = {
-        'ticker':       ticker,
-        'price':        None,
-        'front_iv':     None,
-        'back_iv':      None,
-        'slope':        None,
-        'slope_pct':    None,
-        'delta':        None,
-        'gamma':        None,
-        'theta':        None,
-        'vega':         None,
-        'em':           None,
-        'em_flag':      'unknown',
+        'ticker':        ticker,
+        'price':         None,
+        'front_iv':      None,
+        'back_iv':       None,
+        'slope':         None,
+        'slope_pct':     None,
+        'delta':         None,
+        'gamma':         None,
+        'theta':         None,
+        'vega':          None,
+        'em':            None,
+        'em_flag':       'unknown',
         'open_interest': None,
-        'liquidity_ok': False,
-        # Real strike lists for snapping condor recommendations
-        'call_strikes': [],
-        'put_strikes':  [],
-        'error':        None
+        'liquidity_ok':  False,
+        'call_strikes':  [],
+        'put_strikes':   [],
+        'iv_source':     'unknown',
+        'error':         None
     }
 
     try:
         t = yf.Ticker(ticker)
 
-        # ── Current price ────────────────────────────────────────────
+        # ── Price ─────────────────────────────────────────────────────
         hist = t.history(period="2d")
         if hist.empty:
             result['error'] = 'No price data'
             return result
         price = float(hist['Close'].iloc[-1])
+        if price <= 0:
+            result['error'] = 'Invalid price'
+            return result
         result['price'] = price
 
-        # ── Expiries ─────────────────────────────────────────────────
+        # ── Expiries ──────────────────────────────────────────────────
         expiries = t.options
         if not expiries or len(expiries) < 2:
-            result['error'] = 'Insufficient expiries'
+            result['error'] = 'No options listed'
             return result
 
         today = datetime.now().date()
@@ -549,10 +534,10 @@ def fetch_options_data(ticker, em_min, em_max, min_oi):
             dte = (exp_date - today).days
             if front_expiry is None and dte >= 0:
                 front_expiry = exp
-                front_dte    = max(dte, 1)   # avoid zero division
+                front_dte    = max(dte, 1)
             elif back_expiry is None and dte >= 20:
                 back_expiry = exp
-                back_dte    = dte
+                back_dte    = max(dte, 1)
             if front_expiry and back_expiry:
                 break
 
@@ -560,10 +545,12 @@ def fetch_options_data(ticker, em_min, em_max, min_oi):
             result['error'] = 'Could not find suitable expiries'
             return result
 
-        # ── Fetch chains ─────────────────────────────────────────────
+        T_front = front_dte / 365.0
+        T_back  = back_dte  / 365.0
+
+        # ── Chains ────────────────────────────────────────────────────
         front_chain = t.option_chain(front_expiry)
         back_chain  = t.option_chain(back_expiry)
-
         front_calls = front_chain.calls
         front_puts  = front_chain.puts
         back_calls  = back_chain.calls
@@ -572,87 +559,119 @@ def fetch_options_data(ticker, em_min, em_max, min_oi):
             result['error'] = 'No front month calls'
             return result
 
-        # ── Store real available strikes ──────────────────────────────
+        # ── Real strikes ──────────────────────────────────────────────
         result['call_strikes'] = sorted(front_calls['strike'].dropna().tolist())
-        result['put_strikes']  = sorted(front_puts['strike'].dropna().tolist()
-                                        if not front_puts.empty else result['call_strikes'])
+        result['put_strikes']  = sorted(
+            front_puts['strike'].dropna().tolist()
+            if not front_puts.empty else result['call_strikes']
+        )
 
-        # ── ATM strike ───────────────────────────────────────────────
+        # ── ATM strike ────────────────────────────────────────────────
         atm_idx    = (front_calls['strike'] - price).abs().idxmin()
         atm_strike = float(front_calls.loc[atm_idx, 'strike'])
         atm_call   = front_calls.loc[atm_idx]
 
-        # ── IV from bid-ask mid (back-solved BSM) ────────────────────
-        T_front = front_dte / 365.0
-
-        call_bid = safe_get(atm_call.get('bid'), 0)
-        call_ask = safe_get(atm_call.get('ask'), 0)
-        call_mid = (float(call_bid) + float(call_ask)) / 2
-
-        front_iv = implied_vol_from_mid(price, atm_strike, T_front, call_mid)
-
-        # Fallback to Yahoo's figure if back-solve fails (e.g. stale/zero bid-ask)
-        if front_iv is None or front_iv <= 0:
-            front_iv = safe_get(atm_call.get('impliedVolatility'), None)
-            if front_iv:
-                front_iv = float(front_iv)
-                result['iv_source'] = 'yahoo_fallback'
-            else:
-                result['error'] = 'Could not determine front IV'
-                return result
-        else:
-            result['iv_source'] = 'bsm_backsolved'
-
-        result['front_iv'] = round(front_iv, 4)
-
-        # ── Open interest ────────────────────────────────────────────
+        # ── Open interest ─────────────────────────────────────────────
         result['open_interest'] = int(safe_get(atm_call.get('openInterest'), 0))
         result['liquidity_ok']  = result['open_interest'] >= min_oi
 
-        # ── BSM Greeks — always computed, never rely on yfinance ─────
-        T = front_dte / 365.0
+        # ── Front IV — three-tier fallback ────────────────────────────
+        front_iv = None
+
+        # Tier 1: back-solve from bid-ask mid
+        try:
+            bid = float(safe_get(atm_call.get('bid'), 0) or 0)
+            ask = float(safe_get(atm_call.get('ask'), 0) or 0)
+            if bid > 0 or ask > 0:
+                mid = (bid + ask) / 2 if ask > 0 else bid
+                front_iv = implied_vol_from_mid(price, atm_strike, T_front, mid)
+                if front_iv and front_iv > 0:
+                    result['iv_source'] = 'bsm_backsolved'
+        except Exception:
+            pass
+
+        # Tier 2: Yahoo's pre-calculated IV
+        if not front_iv or front_iv <= 0:
+            try:
+                yiv = safe_get(atm_call.get('impliedVolatility'), None)
+                if yiv and float(yiv) > 0 and not math.isnan(float(yiv)):
+                    front_iv = float(yiv)
+                    result['iv_source'] = 'yahoo'
+            except Exception:
+                pass
+
+        # Tier 3: BSM approximation from last price
+        if not front_iv or front_iv <= 0:
+            try:
+                last = float(safe_get(atm_call.get('lastPrice'), 0) or 0)
+                if last > 0:
+                    front_iv = implied_vol_from_mid(price, atm_strike, T_front, last)
+                    if front_iv and front_iv > 0:
+                        result['iv_source'] = 'bsm_lastprice'
+            except Exception:
+                pass
+
+        # Final guard
+        if not front_iv or front_iv <= 0:
+            result['error'] = 'Could not determine IV (market may be closed)'
+            return result
+
+        result['front_iv'] = round(float(front_iv), 4)
+
+        # ── BSM Greeks ────────────────────────────────────────────────
         result['delta'], result['gamma'], result['theta'], result['vega'] = \
-            bsm_greeks(price, atm_strike, T, front_iv)
+            bsm_greeks(price, atm_strike, T_front, front_iv)
 
-        # ── Expected move = ATM straddle mid / price ─────────────────
-        atm_put_rows = front_puts[front_puts['strike'] == atm_strike]
-        if not atm_put_rows.empty:
-            call_mid = (float(atm_call['bid']) + float(atm_call['ask'])) / 2
-            put_mid  = (float(atm_put_rows.iloc[0]['bid']) +
-                        float(atm_put_rows.iloc[0]['ask'])) / 2
-            em = (call_mid + put_mid) / price
-        else:
-            # Fallback: Black-Scholes ATM approximation  ≈ 0.8 × σ × √T
-            em = 0.8 * front_iv * math.sqrt(T)
-        result['em'] = float(em)
+        # ── Expected Move — straddle mid / price ─────────────────────
+        em = None
+        try:
+            atm_put_rows = front_puts[front_puts['strike'] == atm_strike]
+            if not atm_put_rows.empty:
+                c_bid = float(safe_get(atm_call.get('bid'), 0) or 0)
+                c_ask = float(safe_get(atm_call.get('ask'), 0) or 0)
+                p_bid = float(safe_get(atm_put_rows.iloc[0].get('bid'), 0) or 0)
+                p_ask = float(safe_get(atm_put_rows.iloc[0].get('ask'), 0) or 0)
+                c_mid = (c_bid + c_ask) / 2 if (c_bid + c_ask) > 0 else float(safe_get(atm_call.get('lastPrice'), 0) or 0)
+                p_mid = (p_bid + p_ask) / 2 if (p_bid + p_ask) > 0 else float(safe_get(atm_put_rows.iloc[0].get('lastPrice'), 0) or 0)
+                if (c_mid + p_mid) > 0:
+                    em = (c_mid + p_mid) / price
+        except Exception:
+            pass
 
-        # ── Back month IV — back-solved from bid-ask mid ─────────────
+        # Fallback: BSM ATM approximation
+        if not em or em <= 0:
+            em = 0.8 * front_iv * math.sqrt(T_front)
+
+        result['em'] = round(float(em), 4)
+
+        # ── Back month IV ─────────────────────────────────────────────
+        back_iv = None
         if not back_calls.empty:
-            back_atm_idx  = (back_calls['strike'] - price).abs().idxmin()
-            back_atm_call = back_calls.loc[back_atm_idx]
-            back_atm_strike = float(back_atm_call['strike'])
-            T_back = max(back_dte, 1) / 365.0
+            try:
+                back_atm_idx   = (back_calls['strike'] - price).abs().idxmin()
+                back_atm_call  = back_calls.loc[back_atm_idx]
+                back_strike    = float(back_atm_call['strike'])
 
-            b_bid = safe_get(back_atm_call.get('bid'), 0)
-            b_ask = safe_get(back_atm_call.get('ask'), 0)
-            b_mid = (float(b_bid) + float(b_ask)) / 2
+                b_bid = float(safe_get(back_atm_call.get('bid'), 0) or 0)
+                b_ask = float(safe_get(back_atm_call.get('ask'), 0) or 0)
+                if b_bid > 0 or b_ask > 0:
+                    b_mid  = (b_bid + b_ask) / 2 if b_ask > 0 else b_bid
+                    back_iv = implied_vol_from_mid(price, back_strike, T_back, b_mid)
 
-            back_iv = implied_vol_from_mid(price, back_atm_strike, T_back, b_mid)
+                if not back_iv or back_iv <= 0:
+                    yiv2 = safe_get(back_atm_call.get('impliedVolatility'), None)
+                    if yiv2 and float(yiv2) > 0:
+                        back_iv = float(yiv2)
+            except Exception:
+                pass
 
-            # Fallback to Yahoo's figure
-            if back_iv is None or back_iv <= 0:
-                back_iv_raw = safe_get(back_atm_call.get('impliedVolatility'), None)
-                back_iv = float(back_iv_raw) if back_iv_raw and float(back_iv_raw) > 0 \
-                          else front_iv * 0.65
-            result['back_iv'] = round(back_iv, 4)
-        else:
-            result['back_iv'] = round(front_iv * 0.65, 4)
+        result['back_iv'] = round(float(back_iv) if back_iv and back_iv > 0 else front_iv * 0.65, 4)
 
-        # ── Term structure slope ─────────────────────────────────────
-        result['slope']     = result['front_iv'] - result['back_iv']
-        result['slope_pct'] = (result['slope'] / max(result['back_iv'], 0.01)) * 100
+        # ── Term structure ────────────────────────────────────────────
+        result['slope']     = round(result['front_iv'] - result['back_iv'], 4)
+        result['slope_pct'] = round((result['slope'] / max(result['back_iv'], 0.01)) * 100, 2)
 
-        # ── EM flag ──────────────────────────────────────────────────
+        # ── EM flag ───────────────────────────────────────────────────
         em = result['em']
         if em_min <= em <= em_max:
             result['em_flag'] = 'green'
@@ -982,18 +1001,23 @@ def main():
             progress = st.progress(0)
             tickers = list(earnings_map.keys())
 
+            skipped = {}
             for i, ticker in enumerate(tickers):
                 progress.progress((i + 1) / len(tickers), text=f"Analyzing {ticker}...")
                 opts = fetch_options_data(ticker, em_min, em_max, min_oi)
 
                 if opts['error'] or opts['price'] is None or opts['em'] is None or opts['front_iv'] is None:
+                    reason = opts.get('error') or 'missing data'
+                    skipped[ticker] = reason
                     continue
 
                 # Skip if any core value is NaN
                 try:
                     if any(math.isnan(float(opts[k])) for k in ['price', 'em', 'front_iv', 'back_iv'] if opts[k] is not None):
+                        skipped[ticker] = 'NaN in core values'
                         continue
                 except:
+                    skipped[ticker] = 'NaN check failed'
                     continue
 
                 breach = breach_data.get(ticker, {'count': None, 'avg_mag': None, 'quarters': 8})
@@ -1027,6 +1051,13 @@ def main():
 
             progress.empty()
             st.success(f"Scan complete — {len(st.session_state.results)} tickers analyzed")
+
+            if skipped:
+                with st.expander(f"⚠ {len(skipped)} tickers skipped — click to see why"):
+                    for t, reason in list(skipped.items())[:20]:
+                        st.caption(f"**{t}**: {reason}")
+                    if len(skipped) > 20:
+                        st.caption(f"...and {len(skipped)-20} more")
 
     # ── Display Results ───────────────────────────────────────────────────────
     results = st.session_state.results
