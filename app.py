@@ -22,33 +22,48 @@ st.markdown("""
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap');
 
   html, body, [class*="css"] { font-family: 'Syne', sans-serif; }
-
   .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
 
-  /* ── Metric labels and values — main content only ── */
-  .main [data-testid="stMetricLabel"] p,
-  .main [data-testid="stMetricLabel"] label,
-  .main [data-testid="stMetricLabel"] { color: #ffffff !important; font-weight: 600 !important; }
+  /* ── Force white on ALL metric text in main area ── */
+  section.main [data-testid="stMetricLabel"],
+  section.main [data-testid="stMetricLabel"] *,
+  section.main [data-testid="stMetricLabel"] p { color: #ffffff !important; font-weight: 700 !important; font-size: 13px !important; }
 
-  .main [data-testid="stMetricValue"] { color: #ffffff !important; font-weight: 700 !important; }
+  section.main [data-testid="stMetricValue"],
+  section.main [data-testid="stMetricValue"] * { color: #ffffff !important; font-weight: 800 !important; font-size: 26px !important; }
 
-  .main [data-testid="stMetricDelta"] { font-size: 11px !important; }
+  section.main [data-testid="stMetricDelta"],
+  section.main [data-testid="stMetricDelta"] * { font-size: 12px !important; }
 
-  /* ── Expander headers ── */
-  .main [data-testid="stExpander"] summary p,
-  .main [data-testid="stExpander"] summary span,
-  .main [data-testid="stExpander"] summary { color: #ffffff !important; font-weight: 700 !important; font-size: 15px !important; }
+  /* ── Expander header text ── */
+  section.main [data-testid="stExpander"] summary,
+  section.main [data-testid="stExpander"] summary *,
+  section.main [data-testid="stExpander"] summary p { color: #ffffff !important; font-weight: 700 !important; font-size: 15px !important; }
 
-  /* ── Tab labels ── */
-  .main [data-testid="stTabs"] button p,
-  .main [data-testid="stTabs"] button { color: #ffffff !important; font-weight: 600 !important; }
+  /* ── Tab button text ── */
+  section.main button[data-baseweb="tab"],
+  section.main button[data-baseweb="tab"] * { color: #ffffff !important; font-weight: 700 !important; font-size: 14px !important; }
 
-  /* ── Text inside expanders ── */
-  .main [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p,
-  .main [data-testid="stExpander"] p { color: #e8eaf0 !important; }
+  /* ── All paragraph text inside expanders ── */
+  section.main [data-testid="stExpander"] p,
+  section.main [data-testid="stExpander"] label,
+  section.main [data-testid="stExpander"] span { color: #e8eaf0 !important; }
 
-  /* ── Info/warning boxes inside expanders ── */
-  .main [data-testid="stExpander"] [data-testid="stAlert"] p { color: #ffffff !important; }
+  /* ── Caption text ── */
+  section.main [data-testid="stCaptionContainer"] p,
+  section.main small { color: #b0b8c8 !important; font-size: 12px !important; }
+
+  /* ── Markdown bold inside expanders ── */
+  section.main [data-testid="stExpander"] strong { color: #ffffff !important; }
+
+  /* ── Success/info/warning text ── */
+  section.main [data-testid="stAlert"] p { color: #ffffff !important; font-weight: 600 !important; }
+
+  /* ── Number inputs inside expanders ── */
+  section.main [data-testid="stExpander"] input { color: #ffffff !important; background: #1e2430 !important; }
+
+  /* ── Expander border ── */
+  section.main [data-testid="stExpander"] { border: 1px solid #2a3040 !important; border-radius: 10px !important; background: #111318 !important; }
 
   .metric-card {
     background: #111318;
@@ -1004,26 +1019,27 @@ def main():
 
             skipped = {}
             debug_shown = False
+            debug_data = {}
             for i, ticker in enumerate(tickers):
                 progress.progress((i + 1) / len(tickers), text=f"Analyzing {ticker}...")
                 opts = fetch_options_data(ticker, em_min, em_max, min_oi)
 
-                # Show raw debug for first ticker regardless of outcome
+                # Store debug for first ticker
                 if not debug_shown:
                     debug_shown = True
-                    with st.expander(f"🔍 DEBUG — first ticker: {ticker}", expanded=True):
-                        st.json({
-                            'ticker':     opts.get('ticker'),
-                            'price':      opts.get('price'),
-                            'front_iv':   opts.get('front_iv'),
-                            'back_iv':    opts.get('back_iv'),
-                            'em':         opts.get('em'),
-                            'slope':      opts.get('slope'),
-                            'error':      opts.get('error'),
-                            'iv_source':  opts.get('iv_source'),
-                            'oi':         opts.get('open_interest'),
-                            'call_strikes_count': len(opts.get('call_strikes', [])),
-                        })
+                    debug_data = {
+                        'ticker':     opts.get('ticker'),
+                        'price':      opts.get('price'),
+                        'front_iv':   opts.get('front_iv'),
+                        'back_iv':    opts.get('back_iv'),
+                        'em':         opts.get('em'),
+                        'slope':      opts.get('slope'),
+                        'error':      opts.get('error'),
+                        'iv_source':  opts.get('iv_source'),
+                        'oi':         opts.get('open_interest'),
+                        'call_strikes_count': len(opts.get('call_strikes', [])),
+                    }
+                    st.session_state['_debug_ticker_data'] = debug_data
 
                 if opts['error'] or opts['price'] is None or opts['em'] is None or opts['front_iv'] is None:
                     reason = opts.get('error') or 'missing data'
@@ -1070,153 +1086,155 @@ def main():
 
             progress.empty()
             st.success(f"Scan complete — {len(st.session_state.results)} tickers analyzed")
-
-            if skipped:
-                with st.expander(f"⚠ {len(skipped)} tickers skipped — click to see why"):
-                    for t, reason in list(skipped.items())[:20]:
-                        st.caption(f"**{t}**: {reason}")
-                    if len(skipped) > 20:
-                        st.caption(f"...and {len(skipped)-20} more")
+            st.session_state['skipped'] = skipped
 
     # ── Display Results ───────────────────────────────────────────────────────
     results = st.session_state.results
     if results:
-        # Filter and sort
         filtered = [r for r in results if r['rating'] in rating_filter]
         filtered.sort(key=lambda x: x['score'], reverse=True)
 
-        # Summary stats
         c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("Scanned",  len(results))
-        c2.metric("Strong",   sum(1 for r in results if r['rating'] == 'strong'))
-        c3.metric("Good",     sum(1 for r in results if r['rating'] == 'good'))
-        c4.metric("Marginal", sum(1 for r in results if r['rating'] == 'marginal'))
-        c5.metric("Avoid",    sum(1 for r in results if r['rating'] == 'avoid'))
+        c1.metric("Scanned",   len(results))
+        c2.metric("Strong",    sum(1 for r in results if r['rating'] == 'strong'))
+        c3.metric("Good",      sum(1 for r in results if r['rating'] == 'good'))
+        c4.metric("Marginal",  sum(1 for r in results if r['rating'] == 'marginal'))
+        c5.metric("Avoid",     sum(1 for r in results if r['rating'] == 'avoid'))
         c6.metric("Avg Score", f"{sum(r['score'] for r in results) / len(results):.0f}")
 
         st.markdown(f"Showing **{len(filtered)}** of {len(results)} results")
 
+        def card(label, value, sub=None, color='#ffffff'):
+            sub_html = f'<div style="font-size:11px;color:#a0b0c0;margin-top:3px">{sub}</div>' if sub else ''
+            return (
+                f'<div style="background:#1c2230;border:1px solid #2e3a4e;border-radius:8px;'
+                f'padding:12px 14px;height:100%">'
+                f'<div style="font-family:\'Space Mono\',monospace;font-size:9px;color:#6a7a8a;'
+                f'letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px">{label}</div>'
+                f'<div style="font-family:\'Space Mono\',monospace;font-size:15px;font-weight:700;'
+                f'color:{color}">{value}</div>{sub_html}</div>'
+            )
+
         for r in filtered:
-            em_color = {'green': '#00e676', 'yellow': '#ffd740', 'red': '#ff4d6a'}.get(r['em_flag'], '#5a6070')
-            slope_ok = r['slope'] >= slope_threshold
-            score_cls = 'score-a' if r['score'] >= 75 else 'score-b' if r['score'] >= 55 else 'score-c' if r['score'] >= 35 else 'score-f'
-            breach_display = f"{r['breach_count']}/{r['breach_quarters']} qtrs" if r['breach_count'] is not None else "No data — click to enter"
+            em_color     = {'green':'#00e676','yellow':'#ffd740','red':'#ff4d6a'}.get(r['em_flag'],'#a0b0c0')
+            slope_ok     = r['slope'] >= slope_threshold
+            slope_color  = '#00e676' if slope_ok else '#ff4d6a'
+            rating_color = {'strong':'#00e676','good':'#00e5ff','marginal':'#ffd740','avoid':'#ff4d6a'}.get(r['rating'],'#ffffff')
 
             with st.expander(
                 f"{'🟢' if r['rating']=='strong' else '🔵' if r['rating']=='good' else '🟡' if r['rating']=='marginal' else '🔴'}  "
-                f"**{r['ticker']}**  ·  "
-                f"Earnings {r['earnings_date']} {r['timing']}  ·  "
-                f"EM {pct(r['em'])}  ·  "
-                f"Score {r['score']}/100  ·  "
+                f"**{r['ticker']}**  ·  {r['earnings_date']} {r['timing']}  ·  "
+                f"EM {pct(r['em'])}  ·  Score {r['score']}/100  ·  "
                 f"{'STRONG' if r['rating']=='strong' else 'GOOD' if r['rating']=='good' else 'MARGINAL' if r['rating']=='marginal' else 'AVOID'}"
             ):
                 tab1, tab2, tab3 = st.tabs(["📊 Greeks & IV", "🦅 Condor Setup", "📝 Breach History"])
 
                 with tab1:
-                    g1, g2, g3, g4 = st.columns(4)
-                    g1.metric("Price",    dollar(r['price']))
-                    g2.metric("Front IV", pct(r['front_iv']))
-                    g3.metric("30D IV",   pct(r['back_iv']))
-                    g4.metric("Slope",    pct(r['slope']), delta="✓ Meets threshold" if slope_ok else "✗ Below threshold")
+                    g1,g2,g3,g4 = st.columns(4)
+                    with g1: st.markdown(card("Price",    dollar(r['price'])), unsafe_allow_html=True)
+                    with g2: st.markdown(card("Front IV", pct(r['front_iv']), r.get('iv_source','?')), unsafe_allow_html=True)
+                    with g3: st.markdown(card("30D IV",   pct(r['back_iv'])), unsafe_allow_html=True)
+                    with g4: st.markdown(card("Slope",    pct(r['slope']),
+                                              "✓ Meets threshold" if slope_ok else "✗ Below threshold",
+                                              slope_color), unsafe_allow_html=True)
+                    st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
 
-                    g5, g6, g7, g8 = st.columns(4)
-                    g5.metric("Delta", f"{r['delta']:.3f}")
-                    g6.metric("Gamma", f"{r['gamma']:.4f}")
-                    g7.metric("Theta", f"{r['theta']:.3f}")
-                    g8.metric("Vega",  f"{r['vega']:.3f}")
+                    g5,g6,g7,g8 = st.columns(4)
+                    with g5: st.markdown(card("Delta", f"{r['delta']:.3f}"), unsafe_allow_html=True)
+                    with g6: st.markdown(card("Gamma", f"{r['gamma']:.4f}"), unsafe_allow_html=True)
+                    with g7: st.markdown(card("Theta", f"{r['theta']:.3f}", "per day", '#ff9060'), unsafe_allow_html=True)
+                    with g8: st.markdown(card("Vega",  f"{r['vega']:.3f}",  "per 1% IV", '#60c8ff'), unsafe_allow_html=True)
+                    st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
 
-                    g9, g10, g11, g12 = st.columns(4)
-                    g9.metric("Exp Move", pct(r['em']),
-                              delta="Sweet spot ✓" if r['em_flag'] == 'green' else "Outside range" if r['em_flag'] == 'yellow' else "Extreme ✗")
-                    g10.metric("Open Interest", f"{r['open_interest']:,}" if r['open_interest'] else "—",
-                               delta="✓ Liquid" if r['liquidity_ok'] else "✗ Thin")
-                    g11.metric("Score", f"{r['score']}/100")
-                    g12.metric("Rating", r['rating'].upper())
-
-                    iv_src = r.get('iv_source', 'unknown')
-                    iv_label = "✓ Back-solved from bid-ask mid" if iv_src == 'bsm_backsolved' else "⚠ Yahoo Finance fallback"
-                    st.caption(f"IV Source: {iv_label}")
+                    g9,g10,g11,g12 = st.columns(4)
+                    with g9:  st.markdown(card("Exp Move", pct(r['em']),
+                                               "Sweet spot ✓" if r['em_flag']=='green' else "Outside range" if r['em_flag']=='yellow' else "Extreme ✗",
+                                               em_color), unsafe_allow_html=True)
+                    with g10: st.markdown(card("Open Interest",
+                                               f"{r['open_interest']:,}" if r['open_interest'] else "—",
+                                               "✓ Liquid" if r['liquidity_ok'] else "✗ Thin",
+                                               '#00e676' if r['liquidity_ok'] else '#ff4d6a'), unsafe_allow_html=True)
+                    with g11: st.markdown(card("Score",  f"{r['score']}/100"), unsafe_allow_html=True)
+                    with g12: st.markdown(card("Rating", r['rating'].upper(), value_color=rating_color), unsafe_allow_html=True)
 
                 with tab2:
                     c = r['condor']
-                    st.markdown("**Recommended Iron Condor**")
+                    st.markdown('<div style="color:#ffffff;font-weight:700;font-size:14px;margin-bottom:10px">Recommended Iron Condor</div>', unsafe_allow_html=True)
 
-                    sc1, sc2, sc3, sc4 = st.columns(4)
-                    sc1.metric("Long Put",  dollar(c['long_put']),  delta="Buy (protection)")
-                    sc2.metric("Short Put", dollar(c['short_put']), delta="Sell (premium)")
-                    sc3.metric("Short Call",dollar(c['short_call']),delta="Sell (premium)")
-                    sc4.metric("Long Call", dollar(c['long_call']), delta="Buy (protection)")
+                    sc1,sc2,sc3,sc4 = st.columns(4)
+                    with sc1: st.markdown(card("Long Put",   dollar(c['long_put']),  "Buy — protection", '#60c8ff'), unsafe_allow_html=True)
+                    with sc2: st.markdown(card("Short Put",  dollar(c['short_put']), "Sell — premium",   '#ff6080'), unsafe_allow_html=True)
+                    with sc3: st.markdown(card("Short Call", dollar(c['short_call']),"Sell — premium",   '#ff6080'), unsafe_allow_html=True)
+                    with sc4: st.markdown(card("Long Call",  dollar(c['long_call']), "Buy — protection", '#60c8ff'), unsafe_allow_html=True)
+                    st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
 
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Est. Credit",    dollar(c['credit'] * 100, 0) + "/contract")
-                    m2.metric("Max Loss",       dollar(c['max_loss'] * 100, 0) + "/contract")
-                    m3.metric("Est. Prob Profit", f"{c['prob_profit']}%")
-                    m4.metric("Expected Value", dollar(c['ev']) + "/contract")
+                    m1,m2,m3,m4 = st.columns(4)
+                    with m1: st.markdown(card("Est. Credit",      dollar(c['credit']*100,0)+"/contract",  color='#00e676'), unsafe_allow_html=True)
+                    with m2: st.markdown(card("Max Loss",          dollar(c['max_loss']*100,0)+"/contract", color='#ff4d6a'), unsafe_allow_html=True)
+                    with m3: st.markdown(card("Est. Prob Profit",  f"{c['prob_profit']}%"), unsafe_allow_html=True)
+                    with m4: st.markdown(card("Expected Value",    dollar(c['ev'])+"/contract",
+                                              color='#00e676' if c['ev']>0 else '#ff4d6a'), unsafe_allow_html=True)
+                    st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
 
-                    w1, w2, w3 = st.columns(3)
-                    w1.metric("Call Wing Width", dollar(c['call_wing']))
-                    w2.metric("Put Wing Width",  dollar(c['put_wing']))
-                    w3.metric("Strikes",         "✓ Real chain" if c.get('strikes_real') else "⚠ Estimated")
+                    w1,w2,w3 = st.columns(3)
+                    with w1: st.markdown(card("Call Wing", dollar(c['call_wing'])), unsafe_allow_html=True)
+                    with w2: st.markdown(card("Put Wing",  dollar(c['put_wing'])),  unsafe_allow_html=True)
+                    with w3: st.markdown(card("Strikes",   "✓ Real chain" if c.get('strikes_real') else "⚠ Estimated",
+                                              color='#00e676' if c.get('strikes_real') else '#ffd740'), unsafe_allow_html=True)
 
-                    st.info(f"""
-**Pre-commit exit rules (write these down before entering):**
-- **Winner:** Close at 50% of max credit → buy back at ${c['credit']*50:.0f}
-- **Loser:** Close threatened side at 2× total credit → ${c['credit']*200:.0f}
-- **Time:** Close full position at market open morning after earnings — no exceptions
-                    """)
+                    st.markdown(f"""
+<div style="background:#111827;border:1px solid #2e3a4e;border-radius:8px;padding:14px 16px;
+margin-top:12px;font-family:'Space Mono',monospace;font-size:11px;color:#d0dce8;line-height:1.9">
+<span style="color:#00e5ff;font-weight:700;letter-spacing:1px">EXIT RULES — pre-commit before entering:</span><br>
+🟢 <b>Winner:</b> Close entire condor at 50% of max credit → buy back at <b>${c['credit']*50:.0f}</b><br>
+🔴 <b>Loser:</b> Close threatened side at 2× total credit → <b>${c['credit']*200:.0f}</b><br>
+⏰ <b>Time:</b> Close full position at market open morning after earnings — no exceptions
+</div>""", unsafe_allow_html=True)
 
                     if c['breach_rate'] > 0.4:
                         st.warning(f"⚠️ High historical breach rate ({c['breach_rate']*100:.0f}%) — strikes placed {c['buffer_used']:.2f}× beyond EM. Consider skipping.")
 
                 with tab3:
-                    st.markdown("**Enter thinkBack data to improve score and strike accuracy**")
-                    st.caption("In TOS → Analyze → thinkBack → go to earnings eve → check ATM straddle vs actual move")
+                    st.markdown('<div style="color:#ffffff;font-weight:600;margin-bottom:6px">Enter thinkBack data to improve score and strike accuracy</div>', unsafe_allow_html=True)
+                    st.caption("TOS → Analyze → thinkBack → earnings eve → ATM straddle vs actual move")
 
                     saved = breach_data.get(r['ticker'], {})
-
-                    col_a, col_b, col_c = st.columns(3)
+                    col_a,col_b,col_c = st.columns(3)
                     with col_a:
-                        b_count = st.number_input(
-                            "Breaches (last N quarters)",
-                            min_value=0, max_value=12,
+                        b_count = st.number_input("Breaches (last N quarters)", min_value=0, max_value=12,
                             value=int(saved['count']) if saved.get('count') is not None else 0,
-                            key=f"bc_{r['ticker']}"
-                        )
+                            key=f"bc_{r['ticker']}")
                     with col_b:
-                        b_mag = st.number_input(
-                            "Avg breach magnitude (%)",
-                            min_value=0.0, max_value=50.0, step=0.1,
-                            value=float(saved['avg_mag'] * 100) if saved.get('avg_mag') else 0.0,
-                            key=f"bm_{r['ticker']}"
-                        )
+                        b_mag = st.number_input("Avg breach magnitude (%)", min_value=0.0, max_value=50.0, step=0.1,
+                            value=float(saved['avg_mag']*100) if saved.get('avg_mag') else 0.0,
+                            key=f"bm_{r['ticker']}")
                     with col_c:
-                        b_qtrs = st.number_input(
-                            "Quarters checked",
-                            min_value=1, max_value=12, value=int(saved.get('quarters', 8)),
-                            key=f"bq_{r['ticker']}"
-                        )
+                        b_qtrs = st.number_input("Quarters checked", min_value=1, max_value=12,
+                            value=int(saved.get('quarters',8)), key=f"bq_{r['ticker']}")
 
                     if st.button(f"💾 Save breach data for {r['ticker']}", key=f"save_{r['ticker']}"):
                         save_breach_entry(r['ticker'], b_count, b_mag if b_mag > 0 else None, b_qtrs)
-                        st.success(f"Saved! Re-run screener to recalculate score and strikes for {r['ticker']}.")
+                        st.success(f"Saved! Re-run screener to recalculate {r['ticker']}.")
 
     else:
         st.markdown("""
-        <div style='text-align:center;padding:60px 20px;color:#5a6070'>
+        <div style='text-align:center;padding:60px 20px'>
           <div style='font-size:48px;margin-bottom:16px;opacity:0.3'>◈</div>
-          <div style='font-family:"Syne",sans-serif;font-size:16px;font-weight:700;margin-bottom:8px'>No results yet</div>
-          <div style='font-family:"Space Mono",monospace;font-size:11px;opacity:0.6'>Configure your thresholds in the sidebar and click Run Screener</div>
-        </div>
-        """, unsafe_allow_html=True)
+          <div style='font-family:"Syne",sans-serif;font-size:16px;font-weight:700;color:#ffffff;margin-bottom:8px'>No results yet</div>
+          <div style='font-family:"Space Mono",monospace;font-size:11px;color:#7a8898'>Configure thresholds in the sidebar and click Run Screener</div>
+        </div>""", unsafe_allow_html=True)
 
-    # Footer
+    # ── Debug / Skipped — bottom of page ────────────────────────────────────
     st.markdown("---")
-    st.caption(
-        "For informational and educational purposes only. Not financial advice. "
-        "Options data sourced from Yahoo Finance (yfinance). "
-        "Always verify independently in TOS before trading. "
-        "Historical breach data requires manual entry from TOS thinkBack."
-    )
+    skipped = st.session_state.get('skipped', {})
+    if skipped:
+        with st.expander(f"⚠ {len(skipped)} tickers skipped — click to see why"):
+            for t, reason in list(skipped.items())[:30]:
+                st.caption(f"**{t}**: {reason}")
+            if len(skipped) > 30:
+                st.caption(f"...and {len(skipped)-30} more")
+
+    st.caption("For informational and educational purposes only. Not financial advice. Always verify in TOS before trading.")
 
 if __name__ == "__main__":
     main()
