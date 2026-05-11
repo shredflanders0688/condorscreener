@@ -47,11 +47,11 @@ st.markdown("""
   /* ── All paragraph text inside expanders ── */
   section.main [data-testid="stExpander"] p,
   section.main [data-testid="stExpander"] label,
-  section.main [data-testid="stExpander"] span { color: #ffffff !important; }
+  section.main [data-testid="stExpander"] span { color: #e8eaf0 !important; }
 
   /* ── Caption text ── */
   section.main [data-testid="stCaptionContainer"] p,
-  section.main small { color: #ffffff !important; font-size: 12px !important; }
+  section.main small { color: #b0b8c8 !important; font-size: 12px !important; }
 
   /* ── Markdown bold inside expanders ── */
   section.main [data-testid="stExpander"] strong { color: #ffffff !important; }
@@ -311,41 +311,37 @@ def score_regime(r):
 
     return signals, verdict
 
-# ─── Earnings Calendar ────────────────────────────────────────────────────────
-OPTIONABLE_UNIVERSE = {
-    'AAPL','MSFT','GOOGL','GOOG','AMZN','META','NVDA','TSLA','AMD','NFLX',
-    'CRM','ORCL','ADBE','INTC','QCOM','TXN','AVGO','MU','AMAT','LRCX',
-    'KLAC','MRVL','SMCI','HPQ','DELL','STX','WDC','SNPS','CDNS',
-    'JPM','GS','MS','BAC','C','WFC','V','MA','PYPL','AXP','BLK','SCHW','COF',
-    'JNJ','PFE','MRK','ABBV','LLY','BMY','AMGN','GILD','MRNA','BIIB','REGN','VRTX',
-    'XOM','CVX','COP','SLB','HAL','MPC','VLO','PSX','OXY','DVN',
-    'WMT','TGT','COST','HD','LOW','NKE','SBUX','MCD','DIS','CMCSA','CHTR',
-    'T','VZ','TMUS','UBER','LYFT','ABNB','BKNG','DASH','SNAP','PINS','RDDT',
-    'BA','CAT','DE','MMM','GE','HON','RTX','LMT','NOC','GD','HII',
-    'SHOP','MELI','COIN','HOOD','RBLX','PLTR','SNOW','DDOG','CRWD','ZS',
-    'NET','OKTA','HUBS','VEEV','NOW','WDAY','TEAM','ZM','DOCU','MDB',
-    'SPOT','ROKU','TTD','MTCH','TWLO','S','GTLB','BILL','AFRM',
-    'F','GM','STLA','RIVN','LCID',
-    'WBA','CVS','MCK','CI','UNH','HUM','CNC','MOH',
-    'AMT','PLD','EQIX','CCI','SBAC',
-    'UAL','DAL','AAL','LUV','JBLU','ALK',
-    'MGM','WYNN','LVS','PENN','DKNG',
-    'SOFI','NU','RDFN','Z',
-    'PANW','FTNT','CYBR','PAYC',
-    'EXPE','YELP',
-    'X','NUE','CLF','AA','FCX','GOLD','NEM',
-    'DHI','LEN','TOL','PHM',
-}
+# ─── Market Cap Parser ───────────────────────────────────────────────────────
+def parse_market_cap_billions(mc_str):
+    """
+    Parse Nasdaq market cap strings like '$14.2B', '$890M', '$1.2T' into billions.
+    Returns None if unparseable.
+    """
+    if not mc_str or mc_str in ('', 'N/A', '--', 'NA'):
+        return None
+    try:
+        s = mc_str.replace('$', '').replace(',', '').strip()
+        if s.endswith('T'):
+            return float(s[:-1]) * 1000
+        elif s.endswith('B'):
+            return float(s[:-1])
+        elif s.endswith('M'):
+            return float(s[:-1]) / 1000
+        else:
+            v = float(s)
+            # Raw numbers from Nasdaq are in millions
+            return v / 1000
+    except Exception:
+        return None
 
 @st.cache_data(ttl=3600)
-def fetch_earnings_calendar(days_ahead):
-    """Fetch upcoming earnings from Nasdaq earnings calendar API (free, no key)"""
+def fetch_earnings_calendar(days_ahead, min_market_cap_b=2.0):
+    """Fetch upcoming earnings, filtered by market cap from Nasdaq API data."""
 
     today = datetime.now().date()
     end_date = today + timedelta(days=days_ahead)
     found = {}
 
-    # ── Source 1: Nasdaq earnings calendar ───────────────────────────────────
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json, text/plain, */*',
@@ -353,7 +349,6 @@ def fetch_earnings_calendar(days_ahead):
 
     date_cursor = today
     while date_cursor <= end_date:
-        # Skip weekends
         if date_cursor.weekday() < 5:
             try:
                 url = f"https://api.nasdaq.com/api/calendar/earnings?date={date_cursor.strftime('%Y-%m-%d')}"
@@ -364,35 +359,32 @@ def fetch_earnings_calendar(days_ahead):
                     if rows:
                         for row in rows:
                             ticker = row.get('symbol', '').strip().upper()
-                            # Filter: no slashes (preferred shares), no dots (foreign), reasonable length
+                            # Basic format filter
                             if not ticker or '/' in ticker or '.' in ticker or len(ticker) > 5:
                                 continue
+                            # Market cap filter
+                            mc_b = parse_market_cap_billions(row.get('marketCap', ''))
+                            if mc_b is not None and mc_b < min_market_cap_b:
+                                continue  # Too small — skip
+                            # If no market cap data at all, keep it (we'll rely on OI filter)
                             time_str = row.get('time', '').lower()
                             timing = 'BMO' if 'before' in time_str else 'AMC'
                             found[ticker] = {
-                                'date': date_cursor,
-                                'timing': timing,
+                                'date':       date_cursor,
+                                'timing':     timing,
                                 'market_cap': row.get('marketCap', ''),
-                                'eps_est': row.get('epsForecast', '')
+                                'market_cap_b': mc_b,
                             }
-            except Exception as e:
+            except Exception:
                 pass
         date_cursor += timedelta(days=1)
         time.sleep(0.2)
 
-    # ── Source 2: Fallback to yfinance earnings_dates if Nasdaq returned nothing ─
     if len(found) < 3:
-        st.warning("Nasdaq calendar unavailable — falling back to yfinance earnings_dates scan.")
+        st.warning("Nasdaq calendar unavailable — falling back to yfinance scan.")
         found = yfinance_calendar_fallback(today, end_date)
 
-    # ── Filter to known optionable liquid names ───────────────────────────────
-    filtered = {t: v for t, v in found.items() if t in OPTIONABLE_UNIVERSE}
-
-    # If filter is too aggressive fall back to first 60 raw
-    if len(filtered) < 3:
-        filtered = dict(list(found.items())[:60])
-
-    return filtered
+    return found
 
 
 def yfinance_calendar_fallback(today, end_date):
@@ -919,6 +911,13 @@ def main():
             format_func=lambda x: f"{x:,}+"
         )
 
+        min_market_cap = st.selectbox(
+            "Min Market Cap",
+            [0.5, 1.0, 2.0, 5.0, 10.0],
+            index=2,
+            format_func=lambda x: f"${x:.1f}B+"
+        )
+
         st.markdown("---")
         st.markdown("### 📋 Filter Results")
         rating_filter = st.multiselect(
@@ -1008,12 +1007,12 @@ def main():
         st.session_state.results = []
 
         with st.spinner("Fetching earnings calendar..."):
-            earnings_map = fetch_earnings_calendar(days_ahead)
+            earnings_map = fetch_earnings_calendar(days_ahead, min_market_cap)
 
         if not earnings_map:
             st.warning("No upcoming earnings found for this window. Try extending the date range.")
         else:
-            st.info(f"Found {len(earnings_map)} liquid optionable candidates — fetching options data...")
+            st.info(f"Found {len(earnings_map)} candidates with market cap ≥ ${min_market_cap:.1f}B — fetching options data...")
             progress = st.progress(0)
             tickers = list(earnings_map.keys())
 
@@ -1105,11 +1104,11 @@ def main():
         st.markdown(f"Showing **{len(filtered)}** of {len(results)} results")
 
         def card(label, value, sub=None, color='#ffffff'):
-            sub_html = f'<div style="font-size:11px;color:#ffffff;margin-top:3px">{sub}</div>' if sub else ''
+            sub_html = f'<div style="font-size:11px;color:#a0b0c0;margin-top:3px">{sub}</div>' if sub else ''
             return (
                 f'<div style="background:#1c2230;border:1px solid #2e3a4e;border-radius:8px;'
                 f'padding:12px 14px;height:100%">'
-                f'<div style="font-family:\'Space Mono\',monospace;font-size:9px;color:#ffffff;'
+                f'<div style="font-family:\'Space Mono\',monospace;font-size:9px;color:#6a7a8a;'
                 f'letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px">{label}</div>'
                 f'<div style="font-family:\'Space Mono\',monospace;font-size:15px;font-weight:700;'
                 f'color:{color}">{value}</div>{sub_html}</div>'
@@ -1221,7 +1220,7 @@ margin-top:12px;font-family:'Space Mono',monospace;font-size:11px;color:#d0dce8;
         <div style='text-align:center;padding:60px 20px'>
           <div style='font-size:48px;margin-bottom:16px;opacity:0.3'>◈</div>
           <div style='font-family:"Syne",sans-serif;font-size:16px;font-weight:700;color:#ffffff;margin-bottom:8px'>No results yet</div>
-          <div style='font-family:"Space Mono",monospace;font-size:11px;color:#ffffff'>Configure thresholds in the sidebar and click Run Screener</div>
+          <div style='font-family:"Space Mono",monospace;font-size:11px;color:#7a8898'>Configure thresholds in the sidebar and click Run Screener</div>
         </div>""", unsafe_allow_html=True)
 
     # ── Debug / Skipped — bottom of page ────────────────────────────────────
