@@ -36,11 +36,26 @@ st.markdown("""
   section.main [data-testid="stMetricDelta"],
   section.main [data-testid="stMetricDelta"] * { font-size: 12px !important; }
 
-  /* ── Expander header — handled by config.toml theme ── */
-  section.main details > summary,
-  section.main [data-testid="stExpander"] summary {
-    font-weight: 700 !important;
-    font-size: 14px !important;
+  /* ── Custom header above expander — connect visually ── */
+  section.main details > summary {
+    background: #0d1117 !important;
+    border: 1px solid #2a3a4a !important;
+    border-top: none !important;
+    border-radius: 0 0 8px 8px !important;
+    padding: 4px 18px !important;
+    min-height: 28px !important;
+    cursor: pointer !important;
+  }
+  section.main details[open] > summary {
+    border-radius: 0 !important;
+  }
+  section.main details {
+    background: #111318 !important;
+    border: 1px solid #2a3a4a !important;
+    border-top: none !important;
+    border-radius: 0 0 10px 10px !important;
+    margin-top: 0 !important;
+    margin-bottom: 4px !important;
   }
 
   /* ── Tab button text ── */
@@ -1386,13 +1401,30 @@ def main():
             slope_ok     = r['slope'] >= slope_threshold
             slope_color  = '#00e676' if slope_ok else '#ff4d6a'
             rating_color = {'strong':'#00e676','good':'#00e5ff','marginal':'#ffd740','avoid':'#ff4d6a'}.get(r['rating'],'#ffffff')
+            rating_bg    = {'strong':'rgba(0,230,118,0.12)','good':'rgba(0,229,255,0.10)','marginal':'rgba(255,215,64,0.10)','avoid':'rgba(255,77,106,0.10)'}.get(r['rating'],'')
+            dot          = {'strong':'🟢','good':'🔵','marginal':'🟡','avoid':'🔴'}.get(r['rating'],'⚪')
 
-            with st.expander(
-                f"{'🟢' if r['rating']=='strong' else '🔵' if r['rating']=='good' else '🟡' if r['rating']=='marginal' else '🔴'}  "
-                f"**{r['ticker']}**  ·  {r['earnings_date']} {r['timing']}  ·  "
-                f"EM {pct(r['em'])}  ·  Score {r['score']}/100  ·  "
-                f"{'STRONG' if r['rating']=='strong' else 'GOOD' if r['rating']=='good' else 'MARGINAL' if r['rating']=='marginal' else 'AVOID'}"
-            ):
+            # Custom readable header — rendered as HTML so we control every pixel
+            st.markdown(f"""
+<div style="background:#0d1117;border:1px solid #2a3a4a;border-radius:10px 10px 0 0;
+padding:14px 18px;margin-top:12px;margin-bottom:0px;display:flex;align-items:center;
+gap:12px;flex-wrap:wrap">
+  <span style="font-size:18px">{dot}</span>
+  <span style="font-family:'Space Mono',monospace;font-size:16px;font-weight:700;
+  color:#ffffff;letter-spacing:0.5px">{r['ticker']}</span>
+  <span style="font-family:'Space Mono',monospace;font-size:11px;color:#7090a8">
+    {r['earnings_date']} · {r['timing']} · EM <span style="color:{em_color}">{pct(r['em'])}</span>
+    · Score <span style="color:#ffffff;font-weight:700">{r['score']}/100</span>
+  </span>
+  <span style="margin-left:auto;background:{rating_bg};color:{rating_color};
+  font-family:'Space Mono',monospace;font-size:10px;font-weight:700;letter-spacing:1px;
+  padding:3px 12px;border-radius:20px;border:1px solid {rating_color}40">
+    {r['rating'].upper()}
+  </span>
+</div>
+""", unsafe_allow_html=True)
+
+            with st.expander("", expanded=False):
                 tab1, tab2, tab3 = st.tabs(["📊 Greeks & IV", "🦅 Condor Setup", "📝 Breach History"])
 
                 with tab1:
