@@ -35,10 +35,27 @@ st.markdown("""
   section.main [data-testid="stMetricDelta"],
   section.main [data-testid="stMetricDelta"] * { font-size: 12px !important; }
 
-  /* ── Expander header text ── */
+  /* ── Expander header — nuclear override ── */
+  section.main details > summary,
+  section.main details > summary *,
+  section.main details > summary p,
+  section.main details > summary span,
+  section.main details > summary div,
   section.main [data-testid="stExpander"] summary,
-  section.main [data-testid="stExpander"] summary *,
-  section.main [data-testid="stExpander"] summary p { color: #ffffff !important; font-weight: 700 !important; font-size: 15px !important; }
+  section.main [data-testid="stExpander"] summary * {
+    color: #00e5ff !important;
+    font-weight: 700 !important;
+    font-size: 14px !important;
+  }
+  section.main details > summary {
+    background-color: #0d1117 !important;
+    padding: 12px 16px !important;
+    border-radius: 8px !important;
+  }
+  section.main details[open] > summary {
+    border-radius: 8px 8px 0 0 !important;
+    border-bottom: 1px solid #2a3040 !important;
+  }
 
   /* ── Tab button text ── */
   section.main button[data-baseweb="tab"],
@@ -62,8 +79,13 @@ st.markdown("""
   /* ── Number inputs inside expanders ── */
   section.main [data-testid="stExpander"] input { color: #ffffff !important; background: #1e2430 !important; }
 
-  /* ── Expander border ── */
-  section.main [data-testid="stExpander"] { border: 1px solid #2a3040 !important; border-radius: 10px !important; background: #111318 !important; }
+  /* ── Expander container ── */
+  section.main [data-testid="stExpander"],
+  section.main details {
+    background-color: #111318 !important;
+    border: 1px solid #2a3040 !important;
+    border-radius: 10px !important;
+  }
 
   .metric-card {
     background: #111318;
@@ -1008,6 +1030,76 @@ def main():
         flag_html += f'<span style="background:{bg};color:{color};padding:2px 8px;border-radius:3px;font-family:\'Space Mono\',monospace;font-size:9px">{label} {icon}</span>'
     flag_html += '</div>'
     st.markdown(flag_html, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Manual Ticker Lookup ──────────────────────────────────────────────────
+    st.markdown('<div class="section-header">// MANUAL TICKER LOOKUP</div>', unsafe_allow_html=True)
+
+    col_input, col_date, col_timing, col_btn = st.columns([2, 1.5, 1, 1])
+    with col_input:
+        manual_ticker = st.text_input(
+            "Ticker",
+            placeholder="e.g. SNDK",
+            label_visibility="collapsed"
+        ).strip().upper()
+    with col_date:
+        manual_date = st.date_input(
+            "Earnings Date",
+            value=datetime.now().date() + timedelta(days=1),
+            label_visibility="collapsed"
+        )
+    with col_timing:
+        manual_timing = st.selectbox(
+            "Timing",
+            ["AMC", "BMO"],
+            label_visibility="collapsed"
+        )
+    with col_btn:
+        run_manual = st.button("🔍 Analyze", use_container_width=True)
+
+    if run_manual and manual_ticker:
+        # Check if already in results
+        existing = [r for r in st.session_state.get('results', []) if r['ticker'] == manual_ticker]
+        if existing:
+            st.info(f"{manual_ticker} is already in your results.")
+        else:
+            with st.spinner(f"Fetching options data for {manual_ticker}..."):
+                opts = fetch_options_data(manual_ticker, em_min, em_max, min_oi)
+
+            if opts['error'] or opts['price'] is None or opts['em'] is None or opts['front_iv'] is None:
+                st.error(f"{manual_ticker}: {opts.get('error', 'Could not fetch options data')}")
+            else:
+                breach = breach_data.get(manual_ticker, {'count': None, 'avg_mag': None, 'quarters': 8})
+                score  = calculate_score(
+                    opts['em'], em_min, em_max,
+                    opts['slope'], slope_threshold,
+                    breach['count'], breach.get('quarters', 8),
+                    opts['liquidity_ok'], opts['front_iv']
+                )
+                rating = get_rating(score)
+                condor = recommend_condor(
+                    opts['price'], opts['em'], opts['front_iv'],
+                    breach['count'], breach.get('quarters', 8),
+                    breach.get('avg_mag'), slope_threshold,
+                    call_strikes=opts.get('call_strikes', []),
+                    put_strikes=opts.get('put_strikes', [])
+                )
+                if 'results' not in st.session_state:
+                    st.session_state.results = []
+                st.session_state.results.append({
+                    **opts,
+                    'earnings_date': manual_date,
+                    'timing':        manual_timing,
+                    'breach_count':  breach['count'],
+                    'breach_avg_mag': breach.get('avg_mag'),
+                    'breach_quarters': breach.get('quarters', 8),
+                    'condor':        condor,
+                    'score':         score,
+                    'rating':        rating,
+                    'iv_source':     opts.get('iv_source', 'unknown')
+                })
+                st.success(f"{manual_ticker} added — Score {score}/100 · {rating.upper()}")
 
     st.markdown("---")
 
