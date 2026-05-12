@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from scipy.interpolate import interp1d
 import requests
 import json
 import time
@@ -35,26 +36,11 @@ st.markdown("""
   section.main [data-testid="stMetricDelta"],
   section.main [data-testid="stMetricDelta"] * { font-size: 12px !important; }
 
-  /* ── Expander header — nuclear override ── */
+  /* ── Expander header — handled by config.toml theme ── */
   section.main details > summary,
-  section.main details > summary *,
-  section.main details > summary p,
-  section.main details > summary span,
-  section.main details > summary div,
-  section.main [data-testid="stExpander"] summary,
-  section.main [data-testid="stExpander"] summary * {
-    color: #00e5ff !important;
+  section.main [data-testid="stExpander"] summary {
     font-weight: 700 !important;
     font-size: 14px !important;
-  }
-  section.main details > summary {
-    background-color: #0d1117 !important;
-    padding: 12px 16px !important;
-    border-radius: 8px !important;
-  }
-  section.main details[open] > summary {
-    border-radius: 8px 8px 0 0 !important;
-    border-bottom: 1px solid #2a3040 !important;
   }
 
   /* ── Tab button text ── */
@@ -537,6 +523,13 @@ def fetch_options_data(ticker, em_min, em_max, min_oi):
         'back_iv':       None,
         'slope':         None,
         'slope_pct':     None,
+        'spline_slope':  None,   # ts_slope_0_45 from spline
+        'spline_pass':   None,   # True/False vs -0.00406 threshold
+        'rv30':          None,   # Yang-Zhang 30-day RV
+        'iv_rv_ratio':   None,   # iv30 / rv30
+        'iv_rv_pass':    None,   # True if >= 1.25
+        'avg_volume':    None,
+        'volume_pass':   None,   # True if >= 1.5M
         'delta':         None,
         'gamma':         None,
         'theta':         None,
@@ -554,8 +547,8 @@ def fetch_options_data(ticker, em_min, em_max, min_oi):
     try:
         t = yf.Ticker(ticker)
 
-        # ── Price ─────────────────────────────────────────────────────
-        hist = t.history(period="2d")
+        # ── Price + 3-month history ───────────────────────────────────
+        hist = t.history(period="3mo")
         if hist.empty:
             result['error'] = 'No price data'
             return result
@@ -564,6 +557,18 @@ def fetch_options_data(ticker, em_min, em_max, min_oi):
             result['error'] = 'Invalid price'
             return result
         result['price'] = price
+
+        # ── Yang-Zhang Realized Volatility (30-day) ───────────────────
+        if len(hist) >= 32:
+            result['rv30'] = yang_zhang_rv(hist, window=30)
+
+        # ── Average Volume (30-day) ───────────────────────────────────
+        try:
+            avg_vol = float(hist['Volume'].rolling(30).mean().dropna().iloc[-1])
+            result['avg_volume']  = avg_vol
+            result['volume_pass'] = avg_vol >= 1_500_000
+        except Exception:
+            pass
 
         # ── Expiries ──────────────────────────────────────────────────
         expiries = t.options
@@ -713,7 +718,38 @@ def fetch_options_data(ticker, em_min, em_max, min_oi):
 
         result['back_iv'] = round(float(back_iv) if back_iv and back_iv > 0 else front_iv * 0.65, 4)
 
-        # ── Term structure ────────────────────────────────────────────
+        # ── Spline term structure across ALL expiries ─────────────────
+        try:
+            # Build dict of all available chains for spline
+            all_chains = {}
+            for exp in expiries[:8]:  # cap at 8 expiries for speed
+                try:
+                    all_chains[exp] = t.option_chain(exp)
+                except Exception:
+                    pass
+
+            term_fn, spline_dtes, spline_ivs = build_spline_term_structure(
+                all_chains, price, price  # use current price as underlying
+            )
+            if term_fn and spline_dtes:
+                slope = ts_slope_0_45(term_fn, spline_dtes)
+                result['spline_slope'] = slope
+                result['spline_pass']  = slope is not None and slope <= -0.00406
+        except Exception:
+            pass
+
+        # ── IV/RV Ratio ───────────────────────────────────────────────
+        try:
+            iv30 = result['back_iv']  # 30 DTE IV is our iv30
+            rv30 = result['rv30']
+            if iv30 and rv30 and rv30 > 0:
+                ratio = round(iv30 / rv30, 3)
+                result['iv_rv_ratio'] = ratio
+                result['iv_rv_pass']  = ratio >= 1.25
+        except Exception:
+            pass
+
+        # ── Simple slope (front - back, keep for display) ─────────────
         result['slope']     = round(result['front_iv'] - result['back_iv'], 4)
         result['slope_pct'] = round((result['slope'] / max(result['back_iv'], 0.01)) * 100, 2)
 
@@ -730,6 +766,107 @@ def fetch_options_data(ticker, em_min, em_max, min_oi):
         result['error'] = str(e)[:80]
 
     return result
+
+# ─── Yang-Zhang Realized Volatility ──────────────────────────────────────────
+def yang_zhang_rv(price_data, window=30, trading_periods=252):
+    """
+    Yang-Zhang volatility estimator — accounts for overnight gaps,
+    opening jumps, and intraday range. More accurate than close-to-close RV.
+    Returns annualized RV as a decimal (e.g. 0.32 = 32%).
+    """
+    try:
+        log_ho = (price_data['High']  / price_data['Open']).apply(np.log)
+        log_lo = (price_data['Low']   / price_data['Open']).apply(np.log)
+        log_co = (price_data['Close'] / price_data['Open']).apply(np.log)
+        log_oc = (price_data['Open']  / price_data['Close'].shift(1)).apply(np.log)
+        log_cc = (price_data['Close'] / price_data['Close'].shift(1)).apply(np.log)
+
+        log_oc_sq = log_oc ** 2
+        log_cc_sq = log_cc ** 2
+        rs        = log_ho * (log_ho - log_co) + log_lo * (log_lo - log_co)
+
+        close_vol  = log_cc_sq.rolling(window=window).sum() * (1.0 / (window - 1.0))
+        open_vol   = log_oc_sq.rolling(window=window).sum() * (1.0 / (window - 1.0))
+        window_rs  = rs.rolling(window=window).sum()        * (1.0 / (window - 1.0))
+
+        k      = 0.34 / (1.34 + ((window + 1) / (window - 1)))
+        result = (open_vol + k * close_vol + (1 - k) * window_rs).apply(np.sqrt) * np.sqrt(trading_periods)
+
+        val = float(result.iloc[-1])
+        return val if not math.isnan(val) and val > 0 else None
+    except Exception:
+        return None
+
+
+# ─── Spline Term Structure ────────────────────────────────────────────────────
+def build_spline_term_structure(expiries, price, underlying_price):
+    """
+    Build a spline across all available expiries using ATM IV from each chain.
+    Returns (spline_fn, dtes, ivs) or (None, [], []) on failure.
+    The spline_fn takes a DTE and returns interpolated IV.
+    """
+    from scipy.interpolate import interp1d
+    today = datetime.now().date()
+    dtes, ivs = [], []
+
+    for exp, chain in expiries.items():
+        try:
+            calls = chain.calls
+            puts  = chain.puts
+            if calls.empty or puts.empty:
+                continue
+
+            exp_date = datetime.strptime(exp, '%Y-%m-%d').date()
+            dte = (exp_date - today).days
+            if dte < 1:
+                continue
+
+            c_idx  = (calls['strike'] - underlying_price).abs().idxmin()
+            p_idx  = (puts['strike']  - underlying_price).abs().idxmin()
+            c_iv   = safe_get(calls.loc[c_idx, 'impliedVolatility'], None)
+            p_iv   = safe_get(puts.loc[p_idx,  'impliedVolatility'], None)
+
+            if c_iv and p_iv and float(c_iv) > 0 and float(p_iv) > 0:
+                avg_iv = (float(c_iv) + float(p_iv)) / 2.0
+                dtes.append(dte)
+                ivs.append(avg_iv)
+        except Exception:
+            continue
+
+    if len(dtes) < 2:
+        return None, dtes, ivs
+
+    # Sort by DTE
+    pairs  = sorted(zip(dtes, ivs))
+    dtes   = [p[0] for p in pairs]
+    ivs    = [p[1] for p in pairs]
+
+    try:
+        spline = interp1d(dtes, ivs, kind='linear', fill_value='extrapolate')
+        def term_fn(dte):
+            if dte < dtes[0]:   return ivs[0]
+            elif dte > dtes[-1]: return ivs[-1]
+            return float(spline(dte))
+        return term_fn, dtes, ivs
+    except Exception:
+        return None, dtes, ivs
+
+
+def ts_slope_0_45(term_fn, dtes):
+    """
+    Slope between nearest expiry and 45 DTE.
+    Threshold from original screener: <= -0.00406 passes.
+    Negative slope = contango (front IV > back IV) = event premium loaded in front.
+    """
+    try:
+        near_dte = dtes[0]
+        if near_dte >= 45:
+            return None
+        slope = (term_fn(45) - term_fn(near_dte)) / (45 - near_dte)
+        return round(slope, 6)
+    except Exception:
+        return None
+
 
 # ─── Strike Snapping Helper ───────────────────────────────────────────────────
 def snap_to_real_strike(target, available_strikes, direction='nearest'):
@@ -849,33 +986,49 @@ def recommend_condor(price, em, iv, breach_count, breach_quarters, breach_avg_ma
 
 # ─── Scoring ──────────────────────────────────────────────────────────────────
 def calculate_score(em, em_min, em_max, slope, slope_threshold,
-                    breach_count, breach_quarters, liquidity_ok, front_iv):
+                    breach_count, breach_quarters, liquidity_ok, front_iv,
+                    spline_pass=None, iv_rv_pass=None, volume_pass=None):
     score = 0
 
-    # EM in sweet spot (30 pts)
-    if em_min <= em <= em_max:                        score += 30
-    elif em_min * 0.8 <= em <= em_max * 1.2:          score += 15
+    # EM in sweet spot (20 pts)
+    if em_min <= em <= em_max:               score += 20
+    elif em_min * 0.8 <= em <= em_max * 1.2: score += 10
 
-    # Term structure slope (25 pts)
-    slope_ratio = slope / max(slope_threshold, 0.001)
-    score += min(25, int(slope_ratio * 25))
-
-    # Breach history (25 pts)
-    if breach_count is not None and breach_quarters > 0:
-        rate = breach_count / breach_quarters
-        if rate == 0:        score += 25
-        elif rate <= 0.25:   score += 20
-        elif rate <= 0.375:  score += 12
-        elif rate <= 0.5:    score += 5
+    # Spline term structure slope (20 pts)
+    # Use spline pass/fail if available, fall back to simple slope ratio
+    if spline_pass is True:
+        score += 20
+    elif spline_pass is False:
+        score += 0
     else:
-        score += 12  # Unknown = neutral
+        # Fallback: simple slope ratio against threshold
+        slope_ratio = slope / max(slope_threshold, 0.001)
+        score += min(20, int(slope_ratio * 20))
 
-    # Liquidity (10 pts)
+    # IV/RV ratio >= 1.25 (20 pts)
+    if iv_rv_pass is True:
+        score += 20
+    elif iv_rv_pass is None:
+        score += 10  # Unknown = neutral
+
+    # Volume >= 1.5M (10 pts)
+    if volume_pass is True:
+        score += 10
+    elif volume_pass is None:
+        score += 5   # Unknown = neutral
+
+    # Breach history (20 pts)
+    if breach_count is not None and breach_quarters and breach_quarters > 0:
+        rate = breach_count / breach_quarters
+        if rate == 0:        score += 20
+        elif rate <= 0.25:   score += 16
+        elif rate <= 0.375:  score += 8
+        elif rate <= 0.5:    score += 3
+    else:
+        score += 10  # Unknown = neutral
+
+    # Liquidity / OI (10 pts)
     score += 10 if liquidity_ok else 3
-
-    # IV level (10 pts)
-    if 0.30 <= front_iv <= 0.80:   score += 10
-    elif 0.20 <= front_iv <= 1.0:  score += 5
 
     return min(100, score)
 
@@ -1075,7 +1228,10 @@ def main():
                     opts['em'], em_min, em_max,
                     opts['slope'], slope_threshold,
                     breach['count'], breach.get('quarters', 8),
-                    opts['liquidity_ok'], opts['front_iv']
+                    opts['liquidity_ok'], opts['front_iv'],
+                    spline_pass=opts.get('spline_pass'),
+                    iv_rv_pass=opts.get('iv_rv_pass'),
+                    volume_pass=opts.get('volume_pass')
                 )
                 rating = get_rating(score)
                 condor = recommend_condor(
@@ -1167,7 +1323,10 @@ def main():
                     opts['em'], em_min, em_max,
                     opts['slope'], slope_threshold,
                     breach['count'], breach.get('quarters', 8),
-                    opts['liquidity_ok'], opts['front_iv']
+                    opts['liquidity_ok'], opts['front_iv'],
+                    spline_pass=opts.get('spline_pass'),
+                    iv_rv_pass=opts.get('iv_rv_pass'),
+                    volume_pass=opts.get('volume_pass')
                 )
                 rating = get_rating(score)
                 condor = recommend_condor(
@@ -1263,6 +1422,32 @@ def main():
                                                '#00e676' if r['liquidity_ok'] else '#ff4d6a'), unsafe_allow_html=True)
                     with g11: st.markdown(card("Score",  f"{r['score']}/100"), unsafe_allow_html=True)
                     with g12: st.markdown(card("Rating", r['rating'].upper(), color=rating_color), unsafe_allow_html=True)
+
+                    # ── New signals row ───────────────────────────────
+                    st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+                    n1, n2, n3, n4 = st.columns(4)
+
+                    # Spline slope
+                    ss = r.get('spline_slope')
+                    ss_color = '#00e676' if r.get('spline_pass') else '#ff4d6a' if r.get('spline_pass') is False else '#a0b0c0'
+                    ss_label = f"{'✓ Pass' if r.get('spline_pass') else '✗ Fail' if r.get('spline_pass') is False else '— No data'} (threshold −0.00406)"
+                    with n1: st.markdown(card("Spline Slope", f"{ss:.6f}" if ss is not None else "—", ss_label, ss_color), unsafe_allow_html=True)
+
+                    # IV/RV ratio
+                    ivr = r.get('iv_rv_ratio')
+                    ivr_color = '#00e676' if r.get('iv_rv_pass') else '#ff4d6a' if r.get('iv_rv_pass') is False else '#a0b0c0'
+                    ivr_label = f"{'✓ Pass' if r.get('iv_rv_pass') else '✗ Fail' if r.get('iv_rv_pass') is False else '— No data'} (threshold 1.25)"
+                    with n2: st.markdown(card("IV/RV Ratio", f"{ivr:.2f}" if ivr else "—", ivr_label, ivr_color), unsafe_allow_html=True)
+
+                    # Yang-Zhang RV
+                    rv = r.get('rv30')
+                    with n3: st.markdown(card("YZ RV30", pct(rv) if rv else "—", "Yang-Zhang realized vol"), unsafe_allow_html=True)
+
+                    # Volume
+                    vol = r.get('avg_volume')
+                    vol_color = '#00e676' if r.get('volume_pass') else '#ff4d6a' if r.get('volume_pass') is False else '#a0b0c0'
+                    vol_label = f"{'✓ Pass' if r.get('volume_pass') else '✗ Fail'} (threshold 1.5M)" if vol else "—"
+                    with n4: st.markdown(card("Avg Volume 30D", f"{vol/1e6:.1f}M" if vol else "—", vol_label, vol_color), unsafe_allow_html=True)
 
                 with tab2:
                     c = r['condor']
