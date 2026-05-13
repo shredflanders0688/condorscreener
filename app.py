@@ -1192,9 +1192,9 @@ def main():
 
     # Six metric cards
     metric_defs = [
-        ('vvix',       'VVICKS',            f"{regime['vvix']:.1f}",
+        ('vvix',       'VVIXS',            f"{regime['vvix']:.1f}",
          'Vol of vol — uncertainty about future vol. Under 85 = calm.'),
-        ('vix',        'VICKS',             f"{regime['vix']:.1f}",
+        ('vix',        'VIX',             f"{regime['vix']:.1f}",
          'S&P 30-day implied vol. Strategy sweet spot: 15–22.'),
         ('skew',       'SKEW INDEX',        f"{regime['skew']:.1f}",
          'Tail risk demand. Elevated = institutions buying downside protection.'),
