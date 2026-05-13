@@ -1192,7 +1192,7 @@ def main():
 
     # Six metric cards
     metric_defs = [
-        ('vvix',       'VVIXS',            f"{regime['vvix']:.1f}",
+        ('vvix',       'VVIX',            f"{regime['vvix']:.1f}",
          'Vol of vol — uncertainty about future vol. Under 85 = calm.'),
         ('vix',        'VIX',             f"{regime['vix']:.1f}",
          'S&P 30-day implied vol. Strategy sweet spot: 15–22.'),
@@ -1224,7 +1224,7 @@ def main():
     # Checklist
     flag_items = []
     flag_labels = {
-        'vvix': 'VVICKS', 'vix': 'VICKS', 'skew': 'SKEW',
+        'vvix': 'VVIX', 'vix': 'VIX', 'skew': 'SKEW',
         'credit': 'CREDIT', 'dispersion': 'DISPERSION', 'gap_freq': 'GAP FREQ'
     }
     flag_html = '<div style="margin-top:14px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
