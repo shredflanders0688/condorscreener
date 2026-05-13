@@ -357,74 +357,112 @@ def parse_market_cap_billions(mc_str):
     except Exception:
         return None
 
-@st.cache_data(ttl=3600)
+def parse_timing(time_str):
+    """Parse Nasdaq time field into BMO or AMC."""
+    if not time_str:
+        return 'AMC'
+    t = time_str.lower().strip()
+    if any(x in t for x in ['before', 'bmo', 'pre-market', 'pre market', 'morning']):
+        return 'BMO'
+    if any(x in t for x in ['after', 'amc', 'post-market', 'post market', 'close', 'evening']):
+        return 'AMC'
+    return 'AMC'
+
+def next_trading_day_st(d):
+    d = d + timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d
+
+def get_session_window_st():
+    try:
+        import zoneinfo
+        et = zoneinfo.ZoneInfo("America/New_York")
+        now_et = datetime.now(et)
+    except Exception:
+        now_et = datetime.now()
+    today = now_et.date()
+    nxt   = next_trading_day_st(today)
+    label = f"Tonight AMC + {nxt.strftime('%a')} BMO"
+    return today, nxt, label, now_et.hour
+
+@st.cache_data(ttl=1800)
 def fetch_earnings_calendar(days_ahead, min_market_cap_b=2.0):
-    """Fetch upcoming earnings, filtered by market cap from Nasdaq API data."""
-
+    """
+    days_ahead = -1 triggers next session mode (tonight AMC + tomorrow BMO).
+    Filters stale dates, improves BMO/AMC detection.
+    """
     today = datetime.now().date()
-    end_date = today + timedelta(days=days_ahead)
-    found = {}
 
+    if days_ahead == -1:
+        start_date, end_date, _, current_hour = get_session_window_st()
+    else:
+        start_date   = today
+        end_date     = today + timedelta(days=days_ahead)
+        current_hour = datetime.now().hour
+
+    found   = {}
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json, text/plain, */*',
     }
 
-    date_cursor = today
+    date_cursor = start_date
     while date_cursor <= end_date:
         if date_cursor.weekday() < 5:
             try:
-                url = f"https://api.nasdaq.com/api/calendar/earnings?date={date_cursor.strftime('%Y-%m-%d')}"
+                url  = f"https://api.nasdaq.com/api/calendar/earnings?date={date_cursor.strftime('%Y-%m-%d')}"
                 resp = requests.get(url, headers=headers, timeout=10)
                 if resp.status_code == 200:
-                    data = resp.json()
-                    rows = data.get('data', {}).get('rows', [])
-                    if rows:
-                        for row in rows:
-                            ticker = row.get('symbol', '').strip().upper()
-                            if not ticker or '/' in ticker or '.' in ticker or len(ticker) > 5:
+                    rows = resp.json().get('data', {}).get('rows', []) or []
+                    for row in rows:
+                        ticker = row.get('symbol', '').strip().upper()
+                        if not ticker or '/' in ticker or '.' in ticker or len(ticker) > 5:
+                            continue
+
+                        # Staleness check
+                        if date_cursor < today:
+                            continue
+                        timing = parse_timing(row.get('time', ''))
+                        if date_cursor == today:
+                            if timing == 'BMO' and current_hour >= 10:
+                                continue
+                            if timing == 'AMC' and current_hour >= 22:
                                 continue
 
-                            # Try multiple possible field names for market cap
-                            mc_raw = (row.get('marketCap') or row.get('mktCap') or
-                                      row.get('market_cap') or row.get('mktcap') or '')
-                            mc_b = parse_market_cap_billions(str(mc_raw))
+                        mc_raw = (row.get('marketCap') or row.get('mktCap') or
+                                  row.get('market_cap') or row.get('mktcap') or '')
+                        mc_b   = parse_market_cap_billions(str(mc_raw))
+                        if mc_b is None or mc_b < min_market_cap_b:
+                            continue
 
-                            # Only keep if market cap is parseable AND meets threshold
-                            # This prevents unknown small caps from slipping through
-                            if mc_b is None or mc_b < min_market_cap_b:
+                        # Next session filter
+                        if days_ahead == -1:
+                            if date_cursor == start_date and timing != 'AMC':
+                                continue
+                            if date_cursor == end_date and timing != 'BMO':
                                 continue
 
-                            time_str = row.get('time', '').lower()
-                            timing = 'BMO' if 'before' in time_str else 'AMC'
-                            found[ticker] = {
-                                'date':         date_cursor,
-                                'timing':       timing,
-                                'market_cap':   mc_raw,
-                                'market_cap_b': mc_b,
-                            }
+                        found[ticker] = {
+                            'date':         date_cursor,
+                            'timing':       timing,
+                            'market_cap':   mc_raw,
+                            'market_cap_b': mc_b,
+                        }
             except Exception:
                 pass
         date_cursor += timedelta(days=1)
         time.sleep(0.2)
 
-    # ── If Nasdaq market cap data is sparse, fall back to known liquid names ──
-    if len(found) < 5:
-        st.warning("Nasdaq market cap data unavailable — using curated liquid universe.")
+    if len(found) < 3:
+        st.warning("Nasdaq market cap data sparse — falling back to yfinance.")
         found = yfinance_calendar_fallback(today, end_date)
         return found
 
-    # ── Sort by market cap descending so largest caps get scanned first ───────
     sorted_found = dict(
         sorted(found.items(), key=lambda x: x[1].get('market_cap_b') or 0, reverse=True)
     )
-
-    # ── Hard cap: never scan more than 100 tickers regardless ────────────────
-    if len(sorted_found) > 100:
-        sorted_found = dict(list(sorted_found.items())[:100])
-
-    return sorted_found
-
+    return dict(list(sorted_found.items())[:100])
 
 def yfinance_calendar_fallback(today, end_date):
     """Last resort: scan known liquid tickers via yfinance earnings_dates"""
@@ -1089,9 +1127,9 @@ def main():
 
         days_ahead = st.selectbox(
             "Earnings Window",
-            [3, 7, 14, 30],
-            index=1,
-            format_func=lambda x: f"Next {x} days"
+            [-1, 3, 7, 14, 30],
+            index=0,
+            format_func=lambda x: "Next Session" if x == -1 else f"Next {x} days"
         )
 
         slope_threshold = st.slider(
@@ -1291,7 +1329,11 @@ def main():
         if not earnings_map:
             st.warning("No upcoming earnings found for this window. Try extending the date range.")
         else:
-            st.info(f"Found {len(earnings_map)} candidates (market cap ≥ ${min_market_cap:.1f}B, max 100) — fetching options data...")
+            if days_ahead == -1:
+                _, _, label, _ = get_session_window_st()
+                st.info(f"Next session: {label} — {len(earnings_map)} candidates (market cap ≥ ${min_market_cap:.1f}B) — fetching options data...")
+            else:
+                st.info(f"Found {len(earnings_map)} candidates (market cap ≥ ${min_market_cap:.1f}B, max 100) — fetching options data...")
             progress = st.progress(0)
             tickers = list(earnings_map.keys())
 
